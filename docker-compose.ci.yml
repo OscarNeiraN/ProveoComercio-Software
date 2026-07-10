@@ -1,0 +1,34 @@
+name: proveo-ci
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      NODE_ENV: test
+      PORT: "3000"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ALLOW_SIMULATED_MAIL: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+networks:
+  default:
+    name: proveo-ci

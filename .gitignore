@@ -1,0 +1,9 @@
+node_modules/
+*.env
+backend/.env
+migration/*.sql
+migration/*.dump
+test-results/
+security-reports/
+*.log
+__pycache__/

@@ -1,0 +1,32 @@
+# Docker Compose - solo desarrollo local.
+# Produccion se despliega en AWS Fargate desde ../Terraform.
+#
+# 1. Ajusta backend/.env con tus variables locales.
+# 2. Ejecuta: docker compose up --build
+# 3. Frontend: http://localhost:8080
+# 4. Backend:  http://localhost:3000
+
+services:
+  backend:
+    build: ./backend
+    container_name: proveo-backend
+    ports:
+      - "3000:3000"
+    env_file: ./backend/.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    container_name: proveo-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

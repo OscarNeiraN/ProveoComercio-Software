@@ -1,0 +1,296 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    branches:
+      - main
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecs-cd-${{ github.event.workflow_run.head_branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  continuous-delivery:
+    name: 1. Continuous Delivery To ECR
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      }}
+    outputs:
+      backend_image: ${{ steps.resolve.outputs.backend_image }}
+      frontend_image: ${{ steps.resolve.outputs.frontend_image }}
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      BACKEND_ECR_REPOSITORY: ${{ secrets.BACKEND_ECR_REPOSITORY }}
+      FRONTEND_ECR_REPOSITORY: ${{ secrets.FRONTEND_ECR_REPOSITORY }}
+      COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Validate delivery secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            AWS_REGION
+            BACKEND_ECR_REPOSITORY
+            FRONTEND_ECR_REPOSITORY
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key}" ]; then
+              echo "Missing GitHub secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Resolve image names
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          tag="${COMMIT_SHA::12}"
+          backend_image="${registry}/${BACKEND_ECR_REPOSITORY}:${tag}"
+          frontend_image="${registry}/${FRONTEND_ECR_REPOSITORY}:${tag}"
+
+          echo "AWS_ACCOUNT_ID=${account_id}" >> "$GITHUB_ENV"
+          echo "ECR_REGISTRY=${registry}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${tag}" >> "$GITHUB_ENV"
+          echo "BACKEND_IMAGE=${backend_image}" >> "$GITHUB_ENV"
+          echo "FRONTEND_IMAGE=${frontend_image}" >> "$GITHUB_ENV"
+
+          echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "backend_image=${backend_image}" >> "$GITHUB_OUTPUT"
+          echo "frontend_image=${frontend_image}" >> "$GITHUB_OUTPUT"
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -t "$BACKEND_IMAGE" \
+            -t "$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest" \
+            backend
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            -t "$FRONTEND_IMAGE" \
+            -t "$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest" \
+            frontend
+
+      - name: Scan backend image
+        shell: bash
+        run: |
+          mkdir -p security-reports/images
+          set +e
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/security-reports/images:/reports" \
+            aquasec/trivy:latest image \
+            --format sarif \
+            --output /reports/backend-image.sarif \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            "$BACKEND_IMAGE"
+          echo "$?" > security-reports/images/backend-image.exitcode
+          set -e
+
+      - name: Scan frontend image
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/security-reports/images:/reports" \
+            aquasec/trivy:latest image \
+            --format sarif \
+            --output /reports/frontend-image.sarif \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            "$FRONTEND_IMAGE"
+          echo "$?" > security-reports/images/frontend-image.exitcode
+          set -e
+
+      - name: Upload image scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-image-security-reports
+          path: security-reports/images/
+          if-no-files-found: warn
+
+      - name: Container image quality gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for file in security-reports/images/*.exitcode; do
+            code="$(cat "$file")"
+            echo "$(basename "$file") => $code"
+            if [ "$code" != "0" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" = "1" ]; then
+            echo "Container image scan found vulnerabilities or scanner errors." >&2
+            exit 1
+          fi
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push backend image
+        run: |
+          docker push "$BACKEND_IMAGE"
+          docker push "$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest"
+
+      - name: Push frontend image
+        run: |
+          docker push "$FRONTEND_IMAGE"
+          docker push "$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest"
+
+      - name: Create delivery metadata
+        shell: bash
+        run: |
+          mkdir -p delivery
+          cat > delivery/ecr-images.json <<EOF
+          {
+            "backend_image": "${BACKEND_IMAGE}",
+            "frontend_image": "${FRONTEND_IMAGE}",
+            "image_tag": "${IMAGE_TAG}",
+            "commit_sha": "${COMMIT_SHA}",
+            "ecr_registry": "${ECR_REGISTRY}"
+          }
+          EOF
+
+      - name: Upload delivery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecr-delivery-metadata
+          path: delivery/ecr-images.json
+
+  continuous-deployment:
+    name: 2. Continuous Deployment To ECS
+    runs-on: ubuntu-latest
+    needs: continuous-delivery
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+      ECS_FRONTEND_SERVICE: ${{ secrets.ECS_FRONTEND_SERVICE }}
+      ECS_BACKEND_SERVICE: ${{ secrets.ECS_BACKEND_SERVICE }}
+      ECS_WORKER_SERVICE: ${{ secrets.ECS_WORKER_SERVICE }}
+      BACKEND_IMAGE: ${{ needs.continuous-delivery.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.continuous-delivery.outputs.frontend_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Validate deployment secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY
+            AWS_REGION
+            ECS_CLUSTER
+            ECS_FRONTEND_SERVICE
+            ECS_BACKEND_SERVICE
+            ECS_WORKER_SERVICE
+            BACKEND_IMAGE
+            FRONTEND_IMAGE
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key}" ]; then
+              echo "Missing value for deployment: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy task definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          update_service() {
+            local service="$1"
+            local container="$2"
+            local image="$3"
+            local current_taskdef
+            local new_taskdef
+
+            current_taskdef="$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$service" \
+              --query 'services[0].taskDefinition' \
+              --output text)"
+
+            aws ecs describe-task-definition \
+              --task-definition "$current_taskdef" \
+              --query taskDefinition \
+              > task-definition.json
+
+            python .github/scripts/render-task-definition.py task-definition.json "$container" "$image" > new-task-definition.json
+
+            new_taskdef="$(aws ecs register-task-definition \
+              --cli-input-json file://new-task-definition.json \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)"
+
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$service" \
+              --task-definition "$new_taskdef" \
+              --force-new-deployment \
+              >/dev/null
+          }
+
+          update_service "$ECS_BACKEND_SERVICE" backend "$BACKEND_IMAGE"
+          update_service "$ECS_WORKER_SERVICE" worker "$BACKEND_IMAGE"
+          update_service "$ECS_FRONTEND_SERVICE" frontend "$FRONTEND_IMAGE"
+
+      - name: Wait for ECS stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_FRONTEND_SERVICE" "$ECS_BACKEND_SERVICE" "$ECS_WORKER_SERVICE"
