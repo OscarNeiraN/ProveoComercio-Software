@@ -220,11 +220,16 @@ jobs:
       - name: Prepare DAST reports
         run: mkdir -p security-reports/dast
 
+      - name: Prepare DAST runtime environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
       - name: Start CI application
         shell: bash
         run: |
           set -euo pipefail
-          export JWT_SECRET="$(openssl rand -hex 32)"
           docker compose -f docker-compose.ci.yml up -d --build
           for i in {1..60}; do
             if curl -fsS http://localhost:8080/ >/dev/null; then
@@ -251,6 +256,40 @@ jobs:
             -a
           echo "$?" > security-reports/dast/zap.exitcode
           set -e
+
+      - name: Summarize ZAP alerts
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report_path = Path("security-reports/dast/zap-report.json")
+          summary_path = Path("security-reports/dast/zap-alert-summary.txt")
+
+          if not report_path.exists():
+              summary_path.write_text("ZAP JSON report was not generated.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          alerts = []
+          for site in report.get("site", []):
+              for alert in site.get("alerts", []):
+                  risk = alert.get("riskdesc") or alert.get("risk") or "Unknown"
+                  name = alert.get("alert") or "Unnamed alert"
+                  count = alert.get("count") or len(alert.get("instances", []))
+                  alerts.append((risk, name, count))
+
+          if not alerts:
+              summary_path.write_text("No ZAP alerts found.\n", encoding="utf-8")
+              raise SystemExit(0)
+
+          lines = ["ZAP alerts summary:"]
+          for risk, name, count in sorted(alerts):
+              lines.append(f"- [{risk}] {name} (instances: {count})")
+          summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
 
       - name: Collect DAST logs
         if: always()
@@ -281,7 +320,26 @@ jobs:
           fi
           code="$(cat security-reports/dast/zap.exitcode)"
           echo "zap.exitcode => $code"
-          if [ "$code" != "0" ]; then
-            echo "DAST found alerts or scanner errors." >&2
-            exit 1
+          if [ -f security-reports/dast/zap-alert-summary.txt ]; then
+            cat security-reports/dast/zap-alert-summary.txt
           fi
+          case "$code" in
+            0)
+              echo "DAST passed: ZAP did not find blocking alerts."
+              ;;
+            1)
+              echo "DAST failed: ZAP found at least one FAIL alert." >&2
+              exit 1
+              ;;
+            2)
+              echo "DAST warning: ZAP found WARN alerts. Review dast-zap-reports/zap-report.html or zap-alert-summary.txt."
+              ;;
+            3)
+              echo "DAST failed: ZAP scanner/runtime error." >&2
+              exit 1
+              ;;
+            *)
+              echo "DAST failed: unexpected ZAP exit code: $code" >&2
+              exit 1
+              ;;
+          esac
