@@ -79,8 +79,29 @@ jobs:
       - name: Install Semgrep
         run: python -m pip install --upgrade semgrep
 
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
       - name: Prepare SAST reports
         run: mkdir -p security-reports/sast
+
+      - name: Validate Snyk configuration
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "Missing GitHub secret: SNYK_TOKEN" > security-reports/sast/snyk-token.txt
+            failed=1
+          fi
+          if [ -z "${SNYK_ORG:-}" ]; then
+            echo "Missing GitHub secret: SNYK_ORG" > security-reports/sast/snyk-org.txt
+            failed=1
+          fi
+          echo "$failed" > security-reports/sast/snyk-config.exitcode
 
       - name: npm audit gate
         shell: bash
@@ -89,6 +110,48 @@ jobs:
           cd backend
           npm audit --omit=dev --audit-level=high --json > ../security-reports/sast/npm-audit.json
           echo "$?" > ../security-reports/sast/npm-audit.exitcode
+          set -e
+
+      - name: Snyk Open Source dependency gate
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+        shell: bash
+        run: |
+          set +e
+          if [ -z "${SNYK_TOKEN:-}" ] || [ -z "${SNYK_ORG:-}" ]; then
+            echo "SNYK_TOKEN or SNYK_ORG is missing; Snyk Open Source scan was not executed." > security-reports/sast/snyk-open-source.txt
+            echo "1" > security-reports/sast/snyk-open-source.exitcode
+          else
+            cd backend
+            snyk test \
+              --org="${SNYK_ORG}" \
+              --severity-threshold=high \
+              --json-file-output=../security-reports/sast/snyk-open-source.json \
+              --sarif-file-output=../security-reports/sast/snyk-open-source.sarif
+            echo "$?" > ../security-reports/sast/snyk-open-source.exitcode
+          fi
+          set -e
+
+      - name: Snyk Code gate
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+        shell: bash
+        run: |
+          set +e
+          if [ -z "${SNYK_TOKEN:-}" ] || [ -z "${SNYK_ORG:-}" ]; then
+            echo "SNYK_TOKEN or SNYK_ORG is missing; Snyk Code scan was not executed." > security-reports/sast/snyk-code.txt
+            echo "1" > security-reports/sast/snyk-code.exitcode
+          else
+            snyk code test \
+              --org="${SNYK_ORG}" \
+              --severity-threshold=high \
+              --json-file-output=security-reports/sast/snyk-code.json \
+              --sarif-file-output=security-reports/sast/snyk-code.sarif \
+              .
+            echo "$?" > security-reports/sast/snyk-code.exitcode
+          fi
           set -e
 
       - name: Semgrep SAST gate

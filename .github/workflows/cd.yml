@@ -35,8 +35,9 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
-      BACKEND_ECR_REPOSITORY: ${{ secrets.BACKEND_ECR_REPOSITORY }}
-      FRONTEND_ECR_REPOSITORY: ${{ secrets.FRONTEND_ECR_REPOSITORY }}
+      PROJECT_NAME: proveocomercio
+      BACKEND_ECR_REPOSITORY: proveocomercio-backend
+      FRONTEND_ECR_REPOSITORY: proveocomercio-frontend
       COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - name: Checkout
@@ -51,9 +52,8 @@ jobs:
           required=(
             AWS_ACCESS_KEY_ID
             AWS_SECRET_ACCESS_KEY
+            AWS_SESSION_TOKEN
             AWS_REGION
-            BACKEND_ECR_REPOSITORY
-            FRONTEND_ECR_REPOSITORY
           )
           for key in "${required[@]}"; do
             if [ -z "${!key}" ]; then
@@ -70,18 +70,20 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Resolve image names
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
-          account_id="$(aws sts get-caller-identity --query Account --output text)"
-          registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          registry="${{ steps.login-ecr.outputs.registry }}"
           tag="${COMMIT_SHA::12}"
           backend_image="${registry}/${BACKEND_ECR_REPOSITORY}:${tag}"
           frontend_image="${registry}/${FRONTEND_ECR_REPOSITORY}:${tag}"
 
-          echo "AWS_ACCOUNT_ID=${account_id}" >> "$GITHUB_ENV"
           echo "ECR_REGISTRY=${registry}" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=${tag}" >> "$GITHUB_ENV"
           echo "BACKEND_IMAGE=${backend_image}" >> "$GITHUB_ENV"
@@ -163,9 +165,6 @@ jobs:
             exit 1
           fi
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Push backend image
         run: |
           docker push "$BACKEND_IMAGE"
@@ -205,10 +204,14 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
-      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
-      ECS_FRONTEND_SERVICE: ${{ secrets.ECS_FRONTEND_SERVICE }}
-      ECS_BACKEND_SERVICE: ${{ secrets.ECS_BACKEND_SERVICE }}
-      ECS_WORKER_SERVICE: ${{ secrets.ECS_WORKER_SERVICE }}
+      PROJECT_NAME: proveocomercio
+      ECS_CLUSTER: proveocomercio-cluster
+      ECS_FRONTEND_SERVICE: proveocomercio-frontend-service
+      ECS_BACKEND_SERVICE: proveocomercio-backend-service
+      ECS_WORKER_SERVICE: proveocomercio-worker-service
+      FRONTEND_TASK_DEFINITION_FAMILY: proveocomercio-frontend
+      BACKEND_TASK_DEFINITION_FAMILY: proveocomercio-backend
+      WORKER_TASK_DEFINITION_FAMILY: proveocomercio-worker
       BACKEND_IMAGE: ${{ needs.continuous-delivery.outputs.backend_image }}
       FRONTEND_IMAGE: ${{ needs.continuous-delivery.outputs.frontend_image }}
     steps:
@@ -224,11 +227,8 @@ jobs:
           required=(
             AWS_ACCESS_KEY_ID
             AWS_SECRET_ACCESS_KEY
+            AWS_SESSION_TOKEN
             AWS_REGION
-            ECS_CLUSTER
-            ECS_FRONTEND_SERVICE
-            ECS_BACKEND_SERVICE
-            ECS_WORKER_SERVICE
             BACKEND_IMAGE
             FRONTEND_IMAGE
           )
@@ -247,50 +247,70 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy task definitions
+      - name: Download current task definitions
         shell: bash
         run: |
           set -euo pipefail
 
-          update_service() {
-            local service="$1"
-            local container="$2"
-            local image="$3"
-            local current_taskdef
-            local new_taskdef
+          aws ecs describe-task-definition \
+            --task-definition "$BACKEND_TASK_DEFINITION_FAMILY" \
+            --query taskDefinition \
+            > backend-task-definition.json
 
-            current_taskdef="$(aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" \
-              --services "$service" \
-              --query 'services[0].taskDefinition' \
-              --output text)"
+          aws ecs describe-task-definition \
+            --task-definition "$WORKER_TASK_DEFINITION_FAMILY" \
+            --query taskDefinition \
+            > worker-task-definition.json
 
-            aws ecs describe-task-definition \
-              --task-definition "$current_taskdef" \
-              --query taskDefinition \
-              > task-definition.json
+          aws ecs describe-task-definition \
+            --task-definition "$FRONTEND_TASK_DEFINITION_FAMILY" \
+            --query taskDefinition \
+            > frontend-task-definition.json
 
-            python .github/scripts/render-task-definition.py task-definition.json "$container" "$image" > new-task-definition.json
+      - name: Render backend task definition
+        id: render-backend
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: backend-task-definition.json
+          container-name: backend
+          image: ${{ env.BACKEND_IMAGE }}
 
-            new_taskdef="$(aws ecs register-task-definition \
-              --cli-input-json file://new-task-definition.json \
-              --query 'taskDefinition.taskDefinitionArn' \
-              --output text)"
+      - name: Deploy backend service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-backend.outputs.task-definition }}
+          service: ${{ env.ECS_BACKEND_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "$service" \
-              --task-definition "$new_taskdef" \
-              --force-new-deployment \
-              >/dev/null
-          }
+      - name: Render worker task definition
+        id: render-worker
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: worker-task-definition.json
+          container-name: worker
+          image: ${{ env.BACKEND_IMAGE }}
 
-          update_service "$ECS_BACKEND_SERVICE" backend "$BACKEND_IMAGE"
-          update_service "$ECS_WORKER_SERVICE" worker "$BACKEND_IMAGE"
-          update_service "$ECS_FRONTEND_SERVICE" frontend "$FRONTEND_IMAGE"
+      - name: Deploy worker service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-worker.outputs.task-definition }}
+          service: ${{ env.ECS_WORKER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
-      - name: Wait for ECS stability
-        run: |
-          aws ecs wait services-stable \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_FRONTEND_SERVICE" "$ECS_BACKEND_SERVICE" "$ECS_WORKER_SERVICE"
+      - name: Render frontend task definition
+        id: render-frontend
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: frontend-task-definition.json
+          container-name: frontend
+          image: ${{ env.FRONTEND_IMAGE }}
+
+      - name: Deploy frontend service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-frontend.outputs.task-definition }}
+          service: ${{ env.ECS_FRONTEND_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
