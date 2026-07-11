@@ -123,14 +123,18 @@ jobs:
             echo "SNYK_TOKEN or SNYK_ORG is missing; Snyk Open Source scan was not executed." > security-reports/sast/snyk-open-source.txt
             echo "1" > security-reports/sast/snyk-open-source.exitcode
           else
-            cd backend
             snyk test \
+              --all-projects \
+              --detection-depth=4 \
+              --exclude=security-reports,test-results,node_modules \
               --org="${SNYK_ORG}" \
+              --project-name="proveocomercio-software-dependencies" \
+              --remote-repo-url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
               --severity-threshold=high \
-              --json-file-output=../security-reports/sast/snyk-open-source.json \
-              --sarif-file-output=../security-reports/sast/snyk-open-source.sarif \
-              2>&1 | tee ../security-reports/sast/snyk-open-source-output.txt
-            echo "${PIPESTATUS[0]}" > ../security-reports/sast/snyk-open-source.exitcode
+              --json-file-output=security-reports/sast/snyk-open-source.json \
+              --sarif-file-output=security-reports/sast/snyk-open-source.sarif \
+              2>&1 | tee security-reports/sast/snyk-open-source-output.txt
+            echo "${PIPESTATUS[0]}" > security-reports/sast/snyk-open-source.exitcode
           fi
           set -e
 
@@ -145,12 +149,16 @@ jobs:
             echo "SNYK_TOKEN or SNYK_ORG is missing; Snyk monitor was not executed." > security-reports/sast/snyk-open-source-monitor.txt
             echo "1" > security-reports/sast/snyk-open-source-monitor.exitcode
           else
-            cd backend
             snyk monitor \
+              --all-projects \
+              --detection-depth=4 \
+              --exclude=security-reports,test-results,node_modules \
               --org="${SNYK_ORG}" \
-              --project-name="proveocomercio-backend" \
-              2>&1 | tee ../security-reports/sast/snyk-open-source-monitor.txt
-            echo "${PIPESTATUS[0]}" > ../security-reports/sast/snyk-open-source-monitor.exitcode
+              --project-name="proveocomercio-software-dependencies" \
+              --remote-repo-url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --target-reference="${GITHUB_REF_NAME:-main}" \
+              2>&1 | tee security-reports/sast/snyk-open-source-monitor.txt
+            echo "${PIPESTATUS[0]}" > security-reports/sast/snyk-open-source-monitor.exitcode
           fi
           set -e
 
@@ -168,6 +176,10 @@ jobs:
             snyk code test \
               --org="${SNYK_ORG}" \
               --report \
+              --project-name="proveocomercio-software-code" \
+              --target-name="${GITHUB_REPOSITORY}" \
+              --target-reference="${GITHUB_REF_NAME:-main}" \
+              --remote-repo-url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
               --severity-threshold=high \
               --json-file-output=security-reports/sast/snyk-code.json \
               --sarif-file-output=security-reports/sast/snyk-code.sarif \
@@ -302,12 +314,26 @@ jobs:
                               urls.append(github_safe_snyk_url(clean))
               return urls
 
+          def existing_project_files():
+              candidates = [
+                  "package.json",
+                  "backend/package.json",
+                  "frontend/package.json",
+                  "migration/package.json",
+                  "requirements.txt",
+                  "pom.xml",
+                  "go.mod",
+                  "composer.json",
+              ]
+              found = [path for path in candidates if Path(path).exists()]
+              return found or ["No dependency manifest found"]
+
           snyk_oss = read_json(report_dir / "snyk-open-source.json")
           rows = [
               ("npm audit", gate(read_exitcode("npm-audit.exitcode")), npm_summary(), "npm-audit.json"),
-              ("Snyk Open Source", gate(read_exitcode("snyk-open-source.exitcode")), counts_text(severity_counts_from_snyk(snyk_oss)), "snyk-open-source.json"),
-              ("Snyk monitor link", gate(read_exitcode("snyk-open-source-monitor.exitcode")), "snapshot published to Snyk" if read_exitcode("snyk-open-source-monitor.exitcode") == "0" else "snapshot not published", "snyk-open-source-monitor.txt"),
-              ("Snyk Code", gate(read_exitcode("snyk-code.exitcode")), f"{sarif_count(report_dir / 'snyk-code.sarif')} SARIF findings", "snyk-code.sarif"),
+              ("Snyk Open Source all projects", gate(read_exitcode("snyk-open-source.exitcode")), counts_text(severity_counts_from_snyk(snyk_oss)), "snyk-open-source.json"),
+              ("Snyk dependency monitor", gate(read_exitcode("snyk-open-source-monitor.exitcode")), "snapshot published as proveocomercio-software-dependencies" if read_exitcode("snyk-open-source-monitor.exitcode") == "0" else "snapshot not published", "snyk-open-source-monitor.txt"),
+              ("Snyk Code full app", gate(read_exitcode("snyk-code.exitcode")), f"{sarif_count(report_dir / 'snyk-code.sarif')} SARIF findings, project proveocomercio-software-code", "snyk-code.sarif"),
               ("Semgrep", gate(read_exitcode("semgrep.exitcode")), f"{sarif_count(report_dir / 'semgrep.sarif')} SARIF findings", "semgrep.sarif"),
               ("Trivy filesystem", gate(read_exitcode("trivy-fs.exitcode")), f"{sarif_count(report_dir / 'trivy-fs.sarif')} SARIF findings", "trivy-fs.sarif"),
           ]
@@ -325,6 +351,16 @@ jobs:
           ]
           for scanner, status, summary, file_name in rows:
               lines.append(f"| {scanner} | {status} | {summary} | `{file_name}` |")
+
+          lines.extend([
+              "",
+              "## Snyk Scope",
+              "",
+              "- Snyk Open Source runs from the repository root with `--all-projects` and publishes `proveocomercio-software-dependencies`.",
+              "- Snyk Code scans the full `App` repository root and publishes `proveocomercio-software-code`.",
+              "- Dependency manifests detected in this repository:",
+          ])
+          lines.extend(f"  - `{path}`" for path in existing_project_files())
 
           lines.extend(["", "## Snyk Links", ""])
           if links:
@@ -376,7 +412,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare DAST reports
-        run: mkdir -p security-reports/dast
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p security-reports/dast
+          chmod -R a+rwx security-reports/dast
 
       - name: Prepare DAST runtime environment
         shell: bash
@@ -414,6 +454,8 @@ jobs:
             -x zap-report.xml \
             -a
           echo "$?" > security-reports/dast/zap.exitcode
+          sudo chown -R "$(id -u):$(id -g)" security-reports/dast || true
+          chmod -R a+rwX security-reports/dast || true
           set -e
 
       - name: Summarize ZAP alerts
@@ -454,6 +496,8 @@ jobs:
         if: always()
         shell: bash
         run: |
+          sudo chown -R "$(id -u):$(id -g)" security-reports/dast || true
+          chmod -R a+rwX security-reports/dast || true
           docker compose -f docker-compose.ci.yml logs --no-color > security-reports/dast/docker-compose.log 2>&1 || true
           docker compose -f docker-compose.ci.yml ps > security-reports/dast/docker-compose-ps.txt 2>&1 || true
 
