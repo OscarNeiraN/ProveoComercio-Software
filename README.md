@@ -144,12 +144,13 @@ Los workflows viven en `.github/workflows/` y corren sobre este mismo repositori
 - `cd.yml`: se dispara automaticamente cuando `ci.yml` termina bien en `main`, o a mano con `workflow_dispatch`. Construye las imagenes de backend y frontend, las escanea con Trivy, las sube a ECR, y actualiza los tres servicios ECS (backend, worker, frontend) con la nueva revision.
 - `rollback.yml`: se dispara solo a mano (`workflow_dispatch`). Permite volver un servicio ECS especifico a una revision de task definition anterior sin tener que usar la consola de AWS ni memorizar comandos de AWS CLI. Muestra las ultimas revisiones disponibles (imagen y fecha) antes de aplicar el cambio.
 
-### GitHub Secrets que necesita este repositorio
+### GitHub Secrets y variables que necesita este repositorio
 
-| Secret | Descripcion |
+| Nombre | Descripcion |
 |---|---|
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION` | Credenciales AWS. `AWS_SESSION_TOKEN` es obligatorio en AWS Academy Learner Lab (la sesion vence cada pocas horas) y puede quedar vacio en una cuenta AWS normal con credenciales permanentes. |
-| `SNYK_TOKEN`, `SNYK_ORG` | Necesarios para que el job de SAST pase. Si faltan, ese job falla igual (no se salta en silencio). |
+| `SNYK_TOKEN` | Token de autenticacion de Snyk. Debe ir como GitHub Secret. |
+| `SNYK_ORG` | Organizacion de Snyk usada por `snyk test`, `snyk monitor` y `snyk code test`. Recomendado como GitHub Actions Variable porque no es una credencial. El workflow tambien acepta `SNYK_ORG` como Secret, pero los enlaces publicados se codifican para evitar que GitHub los reemplace por `***`. |
 
 Los nombres de cluster, servicios y task definitions de ECS estan hardcodeados como variables de entorno dentro de `cd.yml` y `rollback.yml` (no son secretos, son configuracion): `proveocomercio-cluster`, `proveocomercio-frontend-service`, `proveocomercio-backend-service`, `proveocomercio-worker-service`, y las familias de task definition correspondientes.
 

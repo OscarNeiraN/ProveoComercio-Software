@@ -88,7 +88,7 @@ jobs:
       - name: Validate Snyk configuration
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+          SNYK_ORG: ${{ vars.SNYK_ORG || secrets.SNYK_ORG }}
         shell: bash
         run: |
           set -euo pipefail
@@ -98,7 +98,7 @@ jobs:
             failed=1
           fi
           if [ -z "${SNYK_ORG:-}" ]; then
-            echo "Missing GitHub secret: SNYK_ORG" > security-reports/sast/snyk-org.txt
+            echo "Missing GitHub variable or secret: SNYK_ORG" > security-reports/sast/snyk-org.txt
             failed=1
           fi
           echo "$failed" > security-reports/sast/snyk-config.exitcode
@@ -115,7 +115,7 @@ jobs:
       - name: Snyk Open Source dependency gate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+          SNYK_ORG: ${{ vars.SNYK_ORG || secrets.SNYK_ORG }}
         shell: bash
         run: |
           set +e
@@ -137,7 +137,7 @@ jobs:
       - name: Publish Snyk Open Source snapshot
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+          SNYK_ORG: ${{ vars.SNYK_ORG || secrets.SNYK_ORG }}
         shell: bash
         run: |
           set +e
@@ -157,7 +157,7 @@ jobs:
       - name: Snyk Code gate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+          SNYK_ORG: ${{ vars.SNYK_ORG || secrets.SNYK_ORG }}
         shell: bash
         run: |
           set +e
@@ -209,10 +209,13 @@ jobs:
 
       - name: Summarize SAST reports
         if: always()
+        env:
+          SNYK_ORG: ${{ vars.SNYK_ORG || secrets.SNYK_ORG }}
         shell: bash
         run: |
           python - <<'PY'
           import json
+          import os
           import re
           from pathlib import Path
 
@@ -264,6 +267,20 @@ jobs:
                       total += len(run.get("results", []) or [])
               return total
 
+          def encode_path_segment(value):
+              return "".join(f"%{byte:02X}" for byte in value.encode("utf-8"))
+
+          def github_safe_snyk_url(url):
+              org = os.environ.get("SNYK_ORG", "").strip()
+              if not org:
+                  return url
+              raw_segment = f"/org/{org}/"
+              if raw_segment not in url:
+                  return url
+              # GitHub masks secret values in logs and job summaries. Encoding the
+              # org path segment keeps the link valid while avoiding literal ***.
+              return url.replace(raw_segment, f"/org/{encode_path_segment(org)}/")
+
           def npm_summary():
               data = read_json(report_dir / "npm-audit.json")
               if not isinstance(data, dict):
@@ -282,7 +299,7 @@ jobs:
                       for url in re.findall(r"https?://[^\s\"')>]+", text):
                           clean = url.rstrip(".,]")
                           if ("app.snyk.io" in clean or re.search(r"https?://(?:app\.)?snyk\.io/org/", clean)) and clean not in urls:
-                              urls.append(clean)
+                              urls.append(github_safe_snyk_url(clean))
               return urls
 
           snyk_oss = read_json(report_dir / "snyk-open-source.json")
@@ -312,6 +329,10 @@ jobs:
           lines.extend(["", "## Snyk Links", ""])
           if links:
               lines.extend(f"- {url}" for url in links)
+              lines.extend([
+                  "",
+                  "Nota: si `SNYK_ORG` está guardado como GitHub secret, el segmento de organización se publica codificado para que GitHub no lo reemplace por `***`. El navegador lo decodifica al abrir Snyk.",
+              ])
           else:
               lines.append("- No Snyk URL was produced. Check `snyk-open-source-monitor.txt` and `snyk-code-output.txt`.")
 
