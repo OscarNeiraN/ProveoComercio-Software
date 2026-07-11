@@ -140,8 +140,8 @@ Corre las pruebas unitarias con el test runner nativo de Node (`node --test`). N
 
 Los workflows viven en `.github/workflows/` y corren sobre este mismo repositorio (`App`).
 
-- `ci.yml`: en cada push a `main` y cada pull request. Corre en orden: pruebas unitarias, SAST/SCA (`npm audit`, Snyk Open Source, Snyk Code, Semgrep, Trivy filesystem), y DAST (OWASP ZAP contra la app levantada con `docker-compose.ci.yml`, con una base MySQL real de prueba). Si un paso bloqueante falla, no sigue.
-- `cd.yml`: se dispara automaticamente cuando `ci.yml` termina bien en `main`, o a mano con `workflow_dispatch`. Construye las imagenes de backend y frontend, las escanea con Trivy, las sube a ECR, y actualiza los tres servicios ECS (backend, worker, frontend) con la nueva revision.
+- `ci.yml`: en cada push a `main` y cada pull request. Corre en orden: pruebas unitarias, SAST/SCA (`npm audit`, Snyk Open Source, Snyk Code, Semgrep, Trivy filesystem), y DAST (OWASP ZAP contra la app levantada con `docker-compose.ci.yml`, con una base MySQL real de prueba). Las pruebas unitarias bloquean el pipeline si fallan; los hallazgos de SAST/SCA/DAST quedan como warnings y artifacts, pero no frenan el despliegue.
+- `cd.yml`: se dispara automaticamente cuando `ci.yml` termina bien en `main`, o a mano con `workflow_dispatch`. Construye las imagenes de backend y frontend, las escanea con Trivy, sube los reportes como artifacts, las publica en ECR y actualiza los tres servicios ECS (backend, worker, frontend) con la nueva revision aunque Trivy encuentre vulnerabilidades.
 - `rollback.yml`: se dispara solo a mano (`workflow_dispatch`). Permite volver un servicio ECS especifico a una revision de task definition anterior sin tener que usar la consola de AWS ni memorizar comandos de AWS CLI. Muestra las ultimas revisiones disponibles (imagen y fecha) antes de aplicar el cambio.
 
 ### GitHub Secrets y variables que necesita este repositorio

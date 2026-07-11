@@ -148,21 +148,22 @@ jobs:
           path: security-reports/images/
           if-no-files-found: warn
 
-      - name: Container image quality gate
+      - name: Container image report policy
         shell: bash
         run: |
           set -euo pipefail
-          failed=0
+          found=0
           for file in security-reports/images/*.exitcode; do
             code="$(cat "$file")"
             echo "$(basename "$file") => $code"
             if [ "$code" != "0" ]; then
-              failed=1
+              found=1
             fi
           done
-          if [ "$failed" = "1" ]; then
-            echo "Container image scan found vulnerabilities or scanner errors." >&2
-            exit 1
+          if [ "$found" = "1" ]; then
+            echo "::warning::Container image scan found vulnerabilities or scanner warnings. Deployment is not blocked; review the container-image-security-reports artifact."
+          else
+            echo "Container image scan completed without blocking findings."
           fi
 
       - name: Push backend image

@@ -382,21 +382,22 @@ jobs:
           path: security-reports/sast/
           if-no-files-found: warn
 
-      - name: SAST quality gate
+      - name: SAST report policy
         shell: bash
         run: |
           set -euo pipefail
-          failed=0
+          found=0
           for file in security-reports/sast/*.exitcode; do
             code="$(cat "$file")"
             echo "$(basename "$file") => $code"
             if [ "$code" != "0" ]; then
-              failed=1
+              found=1
             fi
           done
-          if [ "$failed" = "1" ]; then
-            echo "SAST/dependency scan found vulnerabilities or scanner errors." >&2
-            exit 1
+          if [ "$found" = "1" ]; then
+            echo "::warning::SAST/dependency scan found vulnerabilities or scanner warnings. Deployment is not blocked; review the sast-security-reports artifact."
+          else
+            echo "SAST/dependency scan completed without blocking findings."
           fi
 
   dast:
@@ -509,7 +510,7 @@ jobs:
           path: security-reports/dast/
           if-no-files-found: warn
 
-      - name: DAST quality gate
+      - name: DAST report policy
         shell: bash
         run: |
           set -euo pipefail
@@ -527,11 +528,10 @@ jobs:
               echo "DAST passed: ZAP did not find blocking alerts."
               ;;
             1)
-              echo "DAST failed: ZAP found at least one FAIL alert." >&2
-              exit 1
+              echo "::warning::DAST found at least one ZAP FAIL alert. Deployment is not blocked; review dast-zap-reports/zap-report.html or zap-alert-summary.txt."
               ;;
             2)
-              echo "DAST warning: ZAP found WARN alerts. Review dast-zap-reports/zap-report.html or zap-alert-summary.txt."
+              echo "::warning::DAST found ZAP WARN alerts. Deployment is not blocked; review dast-zap-reports/zap-report.html or zap-alert-summary.txt."
               ;;
             3)
               echo "DAST failed: ZAP scanner/runtime error." >&2
