@@ -176,6 +176,23 @@ jobs:
           docker push "$FRONTEND_IMAGE"
           docker push "$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest"
 
+      - name: Verify pushed images in ECR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecr describe-images \
+            --repository-name "$BACKEND_ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" imageTag=latest \
+            --query 'imageDetails[].imageTags' \
+            --output text
+
+          aws ecr describe-images \
+            --repository-name "$FRONTEND_ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" imageTag=latest \
+            --query 'imageDetails[].imageTags' \
+            --output text
+
       - name: Create delivery metadata
         shell: bash
         run: |
