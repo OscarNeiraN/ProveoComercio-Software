@@ -152,7 +152,17 @@ Los workflows viven en `.github/workflows/` y corren sobre este mismo repositori
 | `SNYK_TOKEN` | Token de autenticacion de Snyk. Debe ir como GitHub Secret. |
 | `SNYK_ORG` | Organizacion de Snyk usada por `snyk test`, `snyk monitor` y `snyk code test`. Recomendado como GitHub Actions Variable porque no es una credencial. El workflow tambien acepta `SNYK_ORG` como Secret, pero los enlaces publicados se codifican para evitar que GitHub los reemplace por `***`. |
 
-En Snyk se publican dos vistas: `proveocomercio-software-dependencies` para dependencias detectadas desde la raiz con `--all-projects`, y `proveocomercio-software-code` para el analisis SAST del codigo completo de `App` (`backend`, `frontend`, `migration`, Dockerfiles y workflows). Si solo se ve `proveocomercio-backend`, corresponde a una ejecucion antigua del pipeline y puede eliminarse desde la UI de Snyk para evitar confusion.
+En Snyk se publica `proveocomercio-software-dependencies` para dependencias detectadas desde la raiz con `--all-projects`. El analisis Snyk Code se ejecuta en CI como gate y queda en los artifacts `snyk-code.json` y `snyk-code.sarif`. Para ver preview de codigo en Snyk Web UI, el repositorio debe importarse desde la integracion GitHub de Snyk; los proyectos Code creados solamente por CLI pueden mostrar hallazgos sin preview de codigo.
+
+### Snyk Code con preview de codigo
+
+Para que Snyk permita abrir el codigo fuente dentro de la UI:
+
+1. En Snyk, ir a `Settings > Integrations > Source control`.
+2. Configurar la integracion de GitHub si aun no esta configurada.
+3. Ir a `Projects > Add project > GitHub`.
+4. Importar `OscarNeiraN/ProveoComercio-Software`.
+5. Si existe el proyecto antiguo `proveocomercio-software-code`, eliminarlo para evitar confusion; ese fue creado por CLI y puede mostrar `Code preview not available`.
 
 Los nombres de cluster, servicios y task definitions de ECS estan hardcodeados como variables de entorno dentro de `cd.yml` y `rollback.yml` (no son secretos, son configuracion): `proveocomercio-cluster`, `proveocomercio-frontend-service`, `proveocomercio-backend-service`, `proveocomercio-worker-service`, y las familias de task definition correspondientes.
 

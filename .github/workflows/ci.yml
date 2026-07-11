@@ -175,11 +175,6 @@ jobs:
           else
             snyk code test \
               --org="${SNYK_ORG}" \
-              --report \
-              --project-name="proveocomercio-software-code" \
-              --target-name="${GITHUB_REPOSITORY}" \
-              --target-reference="${GITHUB_REF_NAME:-main}" \
-              --remote-repo-url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
               --severity-threshold=high \
               --json-file-output=security-reports/sast/snyk-code.json \
               --sarif-file-output=security-reports/sast/snyk-code.sarif \
@@ -333,7 +328,7 @@ jobs:
               ("npm audit", gate(read_exitcode("npm-audit.exitcode")), npm_summary(), "npm-audit.json"),
               ("Snyk Open Source all projects", gate(read_exitcode("snyk-open-source.exitcode")), counts_text(severity_counts_from_snyk(snyk_oss)), "snyk-open-source.json"),
               ("Snyk dependency monitor", gate(read_exitcode("snyk-open-source-monitor.exitcode")), "snapshot published as proveocomercio-software-dependencies" if read_exitcode("snyk-open-source-monitor.exitcode") == "0" else "snapshot not published", "snyk-open-source-monitor.txt"),
-              ("Snyk Code full app", gate(read_exitcode("snyk-code.exitcode")), f"{sarif_count(report_dir / 'snyk-code.sarif')} SARIF findings, project proveocomercio-software-code", "snyk-code.sarif"),
+              ("Snyk Code full app", gate(read_exitcode("snyk-code.exitcode")), f"{sarif_count(report_dir / 'snyk-code.sarif')} SARIF findings in CI artifact", "snyk-code.sarif"),
               ("Semgrep", gate(read_exitcode("semgrep.exitcode")), f"{sarif_count(report_dir / 'semgrep.sarif')} SARIF findings", "semgrep.sarif"),
               ("Trivy filesystem", gate(read_exitcode("trivy-fs.exitcode")), f"{sarif_count(report_dir / 'trivy-fs.sarif')} SARIF findings", "trivy-fs.sarif"),
           ]
@@ -357,7 +352,8 @@ jobs:
               "## Snyk Scope",
               "",
               "- Snyk Open Source runs from the repository root with `--all-projects` and publishes `proveocomercio-software-dependencies`.",
-              "- Snyk Code scans the full `App` repository root and publishes `proveocomercio-software-code`.",
+              "- Snyk Code scans the full `App` repository root in CI and stores JSON/SARIF artifacts.",
+              "- To view source-code previews in Snyk Web UI, import `OscarNeiraN/ProveoComercio-Software` through the Snyk GitHub integration instead of relying on a CLI-created Code project.",
               "- Dependency manifests detected in this repository:",
           ])
           lines.extend(f"  - `{path}`" for path in existing_project_files())

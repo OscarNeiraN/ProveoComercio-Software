@@ -12,13 +12,40 @@ let productsById = new Map();
 const fmt = value => '$' + Number(value || 0).toLocaleString('es-CL');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function esc(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function emptyState(message) {
+  return el('div', 'empty-state', message);
+}
+
+function skeletonList(count = 1) {
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < count; index += 1) {
+    fragment.append(el('div', 'skeleton'));
+  }
+  return fragment;
+}
+
+function sanitizeDownloadFilename(value) {
+  const fallback = 'documento.xml';
+  const filename = String(value || fallback).replace(/[\\/:*?"<>|]/g, '-').slice(0, 140).trim();
+  return filename || fallback;
+}
+
+function safeImageUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location.origin);
+    const isSameOrigin = url.origin === window.location.origin;
+    const isTrustedCdn = url.protocol === 'https:' && url.hostname === 'images.unsplash.com';
+    return isSameOrigin || isTrustedCdn ? url.href : '';
+  } catch {
+    return '';
+  }
 }
 
 function getAuthToken() {
@@ -46,7 +73,8 @@ async function fetchJSON(path, opts = {}) {
 
 async function fetchDocument(orderId) {
   const token = getAuthToken();
-  const res = await fetch(`${API}/api/orders/${orderId}/boleta`, {
+  const safeOrderId = encodeURIComponent(String(orderId));
+  const res = await fetch(`${API}/api/orders/${safeOrderId}/boleta`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
@@ -57,14 +85,13 @@ async function fetchDocument(orderId) {
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') || '';
   const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : `documento-${orderId}.xml`;
+  const filename = sanitizeDownloadFilename(match ? match[1] : `documento-${orderId}.xml`);
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
-  document.body.appendChild(link);
+  link.rel = 'noopener';
   link.click();
-  link.remove();
   URL.revokeObjectURL(url);
 }
 
@@ -195,7 +222,7 @@ async function loadCategories() {
       btn.dataset.cat = value;
       btn.type = 'button';
       btn.textContent = cat.name ?? cat;
-      filters.appendChild(btn);
+      filters.append(btn);
     });
   } catch {
     // El catalogo mostrara su propio estado de error.
@@ -212,7 +239,7 @@ function setCategory(cat) {
 
 async function loadProducts() {
   hideError();
-  $('grid').innerHTML = Array(6).fill('<div class="skeleton"></div>').join('');
+  $('grid').replaceChildren(skeletonList(6));
 
   try {
     const params = new URLSearchParams();
@@ -229,7 +256,7 @@ async function loadProducts() {
     reconcileCartWithStock();
   } catch (err) {
     showError('Error al cargar productos: ' + err.message);
-    $('grid').innerHTML = '<div class="empty-state">No se pudieron cargar los productos.</div>';
+    $('grid').replaceChildren(emptyState('No se pudieron cargar los productos.'));
   }
 }
 
@@ -242,56 +269,81 @@ function stockBadge(product) {
 
 function renderProducts(products) {
   if (!products.length) {
-    $('grid').innerHTML = '<div class="empty-state">No se encontraron productos.</div>';
+    $('grid').replaceChildren(emptyState('No se encontraron productos.'));
     return;
   }
 
-  $('grid').innerHTML = products.map(product => {
+  const fragment = document.createDocumentFragment();
+  products.forEach(product => {
     const badge = stockBadge(product);
-    const disabled = Number(product.stock || 0) <= 0 ? 'disabled' : '';
+    const disabled = Number(product.stock || 0) <= 0;
     const discount = Number(product.discount || 0);
-    const oldPrice = product.old_price ? `<span class="old-price">${fmt(product.old_price)}</span>` : '';
-    const discountBadge = discount > 0 ? `<span class="discount-badge">-${discount}%</span>` : '';
-    const image = product.image_url
-      ? `<img src="${esc(product.image_url)}" alt="${esc(product.name)}" loading="lazy" onerror="this.closest('.product-media').classList.add('image-fallback');this.remove();">`
-      : '';
 
-    return `
-      <article class="product-card">
-        <div class="product-media">
-          ${discountBadge}
-          ${image}
-          <div class="fallback-product" aria-hidden="true">${esc((product.brand || product.category || 'P').slice(0, 2).toUpperCase())}</div>
-        </div>
-        <div class="product-body">
-          <div class="product-meta">
-            <span class="brand-name">${esc(product.brand || product.category)}</span>
-            <span class="sku">${esc(product.sku)}</span>
-          </div>
-          <h2>${esc(product.name)}</h2>
-          <p class="product-desc">${esc(product.description)}</p>
-          <div class="rating-line">
-            <span class="stars">★★★★★</span>
-            <strong>${Number(product.rating || 0).toFixed(1)}</strong>
-            <small>(${Number(product.reviews || 0)})</small>
-          </div>
-          <div class="product-line">
-            <div>
-              ${oldPrice}
-              <span class="price">${fmt(product.price)}</span>
-            </div>
-            <span class="badge ${badge.cls}">${esc(badge.text)}</span>
-          </div>
-          <div class="retail-note">
-            <span>Retiro o despacho</span>
-            <strong>Compra protegida</strong>
-          </div>
-          <button class="add-btn" data-id="${esc(product.id)}" type="button" ${disabled}>
-            Agregar al carrito
-          </button>
-        </div>
-      </article>`;
-  }).join('');
+    const card = el('article', 'product-card');
+    const media = el('div', 'product-media');
+    if (discount > 0) media.append(el('span', 'discount-badge', `-${discount}%`));
+
+    const imageUrl = safeImageUrl(product.image_url);
+    if (imageUrl) {
+      const image = el('img');
+      image.src = imageUrl;
+      image.alt = String(product.name || 'Producto');
+      image.loading = 'lazy';
+      image.addEventListener('error', () => {
+        media.classList.add('image-fallback');
+        image.remove();
+      }, { once: true });
+      media.append(image);
+    }
+
+    const fallback = el(
+      'div',
+      'fallback-product',
+      String(product.brand || product.category || 'P').slice(0, 2).toUpperCase(),
+    );
+    fallback.setAttribute('aria-hidden', 'true');
+    media.append(fallback);
+
+    const body = el('div', 'product-body');
+    const meta = el('div', 'product-meta');
+    meta.append(el('span', 'brand-name', product.brand || product.category || 'Marca'));
+    meta.append(el('span', 'sku', product.sku || ''));
+
+    const rating = el('div', 'rating-line');
+    rating.append(el('span', 'stars', '*****'));
+    rating.append(el('strong', null, Number(product.rating || 0).toFixed(1)));
+    rating.append(el('small', null, `(${Number(product.reviews || 0)})`));
+
+    const productLine = el('div', 'product-line');
+    const priceBox = el('div');
+    if (product.old_price) priceBox.append(el('span', 'old-price', fmt(product.old_price)));
+    priceBox.append(el('span', 'price', fmt(product.price)));
+    productLine.append(priceBox);
+    productLine.append(el('span', `badge ${badge.cls}`, badge.text));
+
+    const note = el('div', 'retail-note');
+    note.append(el('span', null, 'Retiro o despacho'));
+    note.append(el('strong', null, 'Compra protegida'));
+
+    const addBtn = el('button', 'add-btn', 'Agregar al carrito');
+    addBtn.type = 'button';
+    addBtn.dataset.id = String(product.id);
+    addBtn.disabled = disabled;
+
+    body.append(
+      meta,
+      el('h2', null, product.name || 'Producto'),
+      el('p', 'product-desc', product.description || ''),
+      rating,
+      productLine,
+      note,
+      addBtn,
+    );
+    card.append(media, body);
+    fragment.append(card);
+  });
+
+  $('grid').replaceChildren(fragment);
 }
 
 function addToCart(productId) {
@@ -360,24 +412,41 @@ function updateCartUI() {
   $('cartSubtitle').textContent = totals.count ? `${totals.count} unidades` : 'Sin productos';
 
   if (!cart.length) {
-    $('cartItems').innerHTML = '<div class="empty-state">Tu carrito esta vacio</div>';
+    $('cartItems').replaceChildren(emptyState('Tu carrito esta vacio'));
     $('cartFooter').hidden = true;
     return;
   }
 
-  $('cartItems').innerHTML = cart.map(item => `
-    <div class="cart-item">
-      <div>
-        <h3>${esc(item.name)}</h3>
-        <small>${esc(item.sku)} - ${fmt(item.price)} c/u - stock ${item.stock}</small>
-        <div class="qty-control">
-          <button type="button" data-action="dec" data-id="${esc(item.id)}">-</button>
-          <span>${item.qty}</span>
-          <button type="button" data-action="inc" data-id="${esc(item.id)}" ${item.qty >= item.stock ? 'disabled' : ''}>+</button>
-        </div>
-      </div>
-      <button class="remove-btn" type="button" data-action="remove" data-id="${esc(item.id)}">Quitar</button>
-    </div>`).join('');
+  const fragment = document.createDocumentFragment();
+  cart.forEach(item => {
+    const row = el('div', 'cart-item');
+    const detail = el('div');
+    detail.append(el('h3', null, item.name));
+    detail.append(el('small', null, `${item.sku || ''} - ${fmt(item.price)} c/u - stock ${item.stock}`));
+
+    const qtyControl = el('div', 'qty-control');
+    const decBtn = el('button', null, '-');
+    decBtn.type = 'button';
+    decBtn.dataset.action = 'dec';
+    decBtn.dataset.id = String(item.id);
+    const incBtn = el('button', null, '+');
+    incBtn.type = 'button';
+    incBtn.dataset.action = 'inc';
+    incBtn.dataset.id = String(item.id);
+    incBtn.disabled = item.qty >= item.stock;
+    qtyControl.append(decBtn, el('span', null, item.qty), incBtn);
+    detail.append(qtyControl);
+
+    const removeBtn = el('button', 'remove-btn', 'Quitar');
+    removeBtn.type = 'button';
+    removeBtn.dataset.action = 'remove';
+    removeBtn.dataset.id = String(item.id);
+
+    row.append(detail, removeBtn);
+    fragment.append(row);
+  });
+
+  $('cartItems').replaceChildren(fragment);
 
   $('cartSubtotal').textContent = fmt(totals.subtotal);
   $('cartTotal').textContent = fmt(totals.subtotal);
@@ -398,14 +467,16 @@ function closeCart() {
 
 function renderCheckoutItems() {
   const totals = cartTotals();
-  $('checkoutItems').innerHTML = cart.map(item => `
-    <div class="checkout-item">
-      <div>
-        <strong>${esc(item.qty)} x ${esc(item.name)}</strong>
-        <span>${esc(item.sku)}</span>
-      </div>
-      <strong>${fmt(item.price * item.qty)}</strong>
-    </div>`).join('');
+  const fragment = document.createDocumentFragment();
+  cart.forEach(item => {
+    const row = el('div', 'checkout-item');
+    const detail = el('div');
+    detail.append(el('strong', null, `${item.qty} x ${item.name}`));
+    detail.append(el('span', null, item.sku || ''));
+    row.append(detail, el('strong', null, fmt(item.price * item.qty)));
+    fragment.append(row);
+  });
+  $('checkoutItems').replaceChildren(fragment);
   $('checkoutTotal').textContent = fmt(totals.subtotal);
 }
 
@@ -444,68 +515,72 @@ function showCheckoutProcessing() {
   $('checkoutGrid').hidden = true;
   $('checkoutState').hidden = false;
   $('checkoutState').className = 'checkout-state processing';
-  $('checkoutState').innerHTML = `
-    <div class="checkout-logo">
-      <div class="checkout-brand-mark">P</div>
-      <div>
-        <strong>ProveoComercio</strong>
-        <span>Compra protegida</span>
-      </div>
-    </div>
-    <p class="eyebrow">Checkout seguro</p>
-    <h3>Procesando compra</h3>
-    <div class="checkout-loader" aria-hidden="true">
-      <span></span>
-      <span></span>
-      <span></span>
-    </div>
-    <p class="checkout-state-copy">Estamos validando stock, registrando el pedido y preparando tu documento.</p>
-  `;
+  const brand = el('div', 'checkout-logo');
+  const brandText = el('div');
+  brandText.append(el('strong', null, 'ProveoComercio'), el('span', null, 'Compra protegida'));
+  brand.append(el('div', 'checkout-brand-mark', 'P'), brandText);
+
+  const loader = el('div', 'checkout-loader');
+  loader.setAttribute('aria-hidden', 'true');
+  loader.append(el('span'), el('span'), el('span'));
+
+  $('checkoutState').replaceChildren(
+    brand,
+    el('p', 'eyebrow', 'Checkout seguro'),
+    el('h3', null, 'Procesando compra'),
+    loader,
+    el('p', 'checkout-state-copy', 'Estamos validando stock, registrando el pedido y preparando tu documento.'),
+  );
 }
 
 function showCheckoutSuccess(data, documentName, mailText) {
   $('checkoutGrid').hidden = true;
   $('checkoutState').hidden = false;
   $('checkoutState').className = 'checkout-state success';
-  $('checkoutState').innerHTML = `
-    <div class="checkout-logo compact">
-      <div class="checkout-brand-mark">P</div>
-      <div>
-        <strong>ProveoComercio</strong>
-        <span>Pedido confirmado</span>
-      </div>
-    </div>
-    <div class="success-ring" aria-hidden="true">
-      <svg viewBox="0 0 48 48">
-        <path d="M14 25.5 21 32l14-17"></path>
-      </svg>
-    </div>
-    <p class="eyebrow">ProveoComercio</p>
-    <h3>Pago exitoso</h3>
-    <p class="checkout-state-copy">Tu compra fue registrada correctamente.</p>
-    <div class="success-summary">
-      <div>
-        <span>Pedido</span>
-        <strong>${esc(data.order_ref || data.order_id)}</strong>
-      </div>
-      <div>
-        <span>Total</span>
-        <strong>${fmt(data.total)}</strong>
-      </div>
-      <div>
-        <span>Documento</span>
-        <strong>${esc(documentName)} ${data.boleta?.folio ? `folio ${esc(data.boleta.folio)}` : 'pendiente'}</strong>
-      </div>
-      <div>
-        <span>Correo</span>
-        <strong>${esc(mailText)}</strong>
-      </div>
-    </div>
-    <div class="success-actions">
-      <button class="primary-btn inline" type="button" id="successOrdersBtn">Ver mis pedidos</button>
-      <button class="ghost-light-btn" type="button" id="successContinueBtn">Seguir comprando</button>
-    </div>
-  `;
+  const brand = el('div', 'checkout-logo compact');
+  const brandText = el('div');
+  brandText.append(el('strong', null, 'ProveoComercio'), el('span', null, 'Pedido confirmado'));
+  brand.append(el('div', 'checkout-brand-mark', 'P'), brandText);
+
+  const ring = el('div', 'success-ring');
+  ring.setAttribute('aria-hidden', 'true');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 48 48');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M14 25.5 21 32l14-17');
+  svg.append(path);
+  ring.append(svg);
+
+  const summary = el('div', 'success-summary');
+  [
+    ['Pedido', data.order_ref || data.order_id],
+    ['Total', fmt(data.total)],
+    ['Documento', `${documentName} ${data.boleta?.folio ? `folio ${data.boleta.folio}` : 'pendiente'}`],
+    ['Correo', mailText],
+  ].forEach(([label, value]) => {
+    const row = el('div');
+    row.append(el('span', null, label), el('strong', null, value));
+    summary.append(row);
+  });
+
+  const actions = el('div', 'success-actions');
+  const ordersBtn = el('button', 'primary-btn inline', 'Ver mis pedidos');
+  ordersBtn.type = 'button';
+  ordersBtn.id = 'successOrdersBtn';
+  const continueBtn = el('button', 'ghost-light-btn', 'Seguir comprando');
+  continueBtn.type = 'button';
+  continueBtn.id = 'successContinueBtn';
+  actions.append(ordersBtn, continueBtn);
+
+  $('checkoutState').replaceChildren(
+    brand,
+    ring,
+    el('p', 'eyebrow', 'ProveoComercio'),
+    el('h3', null, 'Pago exitoso'),
+    el('p', 'checkout-state-copy', 'Tu compra fue registrada correctamente.'),
+    summary,
+    actions,
+  );
 
   $('successOrdersBtn').addEventListener('click', () => {
     closeCheckout();
@@ -596,7 +671,8 @@ function orderStatusClass(order) {
     return 'failed';
   }
   if (order.processing_status === 'completed') return 'completed';
-  return order.processing_status || 'pending';
+  if (['processing', 'queued', 'pending'].includes(order.processing_status)) return order.processing_status;
+  return 'pending';
 }
 
 function orderStatusText(order) {
@@ -614,32 +690,44 @@ function orderStatusText(order) {
 
 function renderOrders(orders) {
   if (!orders.length) {
-    $('ordersList').innerHTML = '<div class="empty-state">Aun no tienes pedidos.</div>';
+    $('ordersList').replaceChildren(emptyState('Aun no tienes pedidos.'));
     return;
   }
 
-  $('ordersList').innerHTML = orders.map(order => `
-    <article class="order-card">
-      <div class="order-head">
-        <div>
-          <h4>${esc(order.order_ref || order.id)}</h4>
-          <small>${esc(order.document_label)}${order.boleta_folio ? ` folio ${esc(order.boleta_folio)}` : ' pendiente'} - ${new Date(order.created_at).toLocaleString('es-CL')}</small>
-        </div>
-        <span class="status-pill ${orderStatusClass(order)}">${esc(orderStatusText(order))}</span>
-      </div>
-      ${order.items.map(item => `
-        <div class="order-line">
-          <div>
-            <strong>${esc(item.quantity)} x ${esc(item.name)}</strong>
-            <span>${esc(item.sku || '')}</span>
-          </div>
-          <strong>${fmt(item.subtotal)}</strong>
-        </div>`).join('')}
-      <div class="order-actions">
-        <strong>${fmt(order.total)}</strong>
-        ${order.boleta_folio ? `<button class="download-btn" type="button" data-order-id="${esc(order.id)}">Descargar XML</button>` : ''}
-      </div>
-    </article>`).join('');
+  const fragment = document.createDocumentFragment();
+  orders.forEach(order => {
+    const card = el('article', 'order-card');
+    const head = el('div', 'order-head');
+    const titleBox = el('div');
+    titleBox.append(el('h4', null, order.order_ref || order.id));
+    const createdAt = order.created_at ? new Date(order.created_at).toLocaleString('es-CL') : 'fecha no disponible';
+    const documentText = `${order.document_label || 'Documento'}${order.boleta_folio ? ` folio ${order.boleta_folio}` : ' pendiente'} - ${createdAt}`;
+    titleBox.append(el('small', null, documentText));
+    head.append(titleBox, el('span', `status-pill ${orderStatusClass(order)}`, orderStatusText(order)));
+
+    card.append(head);
+    (order.items || []).forEach(item => {
+      const line = el('div', 'order-line');
+      const detail = el('div');
+      detail.append(el('strong', null, `${item.quantity} x ${item.name}`));
+      detail.append(el('span', null, item.sku || ''));
+      line.append(detail, el('strong', null, fmt(item.subtotal)));
+      card.append(line);
+    });
+
+    const actions = el('div', 'order-actions');
+    actions.append(el('strong', null, fmt(order.total)));
+    if (order.boleta_folio) {
+      const downloadBtn = el('button', 'download-btn', 'Descargar XML');
+      downloadBtn.type = 'button';
+      downloadBtn.dataset.orderId = String(order.id);
+      actions.append(downloadBtn);
+    }
+    card.append(actions);
+    fragment.append(card);
+  });
+
+  $('ordersList').replaceChildren(fragment);
 }
 
 async function loadOrders(openModal = true) {
@@ -651,14 +739,14 @@ async function loadOrders(openModal = true) {
   try {
     if (openModal) {
       $('ordersWrap').hidden = false;
-      $('ordersList').innerHTML = '<div class="skeleton"></div>';
+      $('ordersList').replaceChildren(skeletonList(1));
     }
     const data = await fetchJSON('/api/orders?limit=20');
     renderOrders(data.orders);
   } catch (err) {
     if (openModal) {
       $('ordersWrap').hidden = false;
-      $('ordersList').innerHTML = `<div class="notice danger">${esc(err.message)}</div>`;
+      $('ordersList').replaceChildren(el('div', 'notice danger', err.message));
     }
   }
 }
