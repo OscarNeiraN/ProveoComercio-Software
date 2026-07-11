@@ -210,11 +210,12 @@ jobs:
       ECS_FRONTEND_SERVICE: proveocomercio-frontend-service
       ECS_BACKEND_SERVICE: proveocomercio-backend-service
       ECS_WORKER_SERVICE: proveocomercio-worker-service
+      BACKEND_ECR_REPOSITORY: proveocomercio-backend
+      FRONTEND_ECR_REPOSITORY: proveocomercio-frontend
       FRONTEND_TASK_DEFINITION_FAMILY: proveocomercio-frontend
       BACKEND_TASK_DEFINITION_FAMILY: proveocomercio-backend
       WORKER_TASK_DEFINITION_FAMILY: proveocomercio-worker
-      BACKEND_IMAGE: ${{ needs.continuous-delivery.outputs.backend_image }}
-      FRONTEND_IMAGE: ${{ needs.continuous-delivery.outputs.frontend_image }}
+      COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -230,8 +231,6 @@ jobs:
             AWS_SECRET_ACCESS_KEY
             AWS_SESSION_TOKEN
             AWS_REGION
-            BACKEND_IMAGE
-            FRONTEND_IMAGE
           )
           for key in "${required[@]}"; do
             if [ -z "${!key}" ]; then
@@ -247,6 +246,82 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR for deployment
+        id: login-ecr-deploy
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve deployment image names
+        id: resolve-deployment-images
+        shell: bash
+        env:
+          DELIVERY_BACKEND_IMAGE: ${{ needs['continuous-delivery'].outputs.backend_image }}
+          DELIVERY_FRONTEND_IMAGE: ${{ needs['continuous-delivery'].outputs.frontend_image }}
+          DELIVERY_IMAGE_TAG: ${{ needs['continuous-delivery'].outputs.image_tag }}
+          ECR_REGISTRY: ${{ steps.login-ecr-deploy.outputs.registry }}
+        run: |
+          set -euo pipefail
+
+          tag="${DELIVERY_IMAGE_TAG:-${COMMIT_SHA::12}}"
+
+          if [ -n "${DELIVERY_BACKEND_IMAGE:-}" ] && [ -n "${DELIVERY_FRONTEND_IMAGE:-}" ]; then
+            backend_image="$DELIVERY_BACKEND_IMAGE"
+            frontend_image="$DELIVERY_FRONTEND_IMAGE"
+          else
+            if [ -z "${ECR_REGISTRY:-}" ]; then
+              echo "Could not resolve ECR registry for deployment fallback." >&2
+              exit 1
+            fi
+            backend_image="${ECR_REGISTRY}/${BACKEND_ECR_REPOSITORY}:${tag}"
+            frontend_image="${ECR_REGISTRY}/${FRONTEND_ECR_REPOSITORY}:${tag}"
+          fi
+
+          if [ -z "$backend_image" ] || [ -z "$frontend_image" ]; then
+            echo "Could not resolve deployment image names." >&2
+            exit 1
+          fi
+
+          case "$backend_image" in
+            */*:*) ;;
+            *)
+              echo "Invalid backend image URI: $backend_image" >&2
+              exit 1
+              ;;
+          esac
+
+          case "$frontend_image" in
+            */*:*) ;;
+            *)
+              echo "Invalid frontend image URI: $frontend_image" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "BACKEND_IMAGE=${backend_image}" >> "$GITHUB_ENV"
+          echo "FRONTEND_IMAGE=${frontend_image}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${tag}" >> "$GITHUB_ENV"
+
+          echo "backend_image=${backend_image}" >> "$GITHUB_OUTPUT"
+          echo "frontend_image=${frontend_image}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          echo "Deploy backend image: ${backend_image}"
+          echo "Deploy frontend image: ${frontend_image}"
+
+      - name: Validate deployment image names
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            BACKEND_IMAGE
+            FRONTEND_IMAGE
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key}" ]; then
+              echo "Missing value for deployment: $key" >&2
+              exit 1
+            fi
+          done
 
       - name: Download current task definitions
         shell: bash
@@ -274,7 +349,7 @@ jobs:
         with:
           task-definition: backend-task-definition.json
           container-name: backend
-          image: ${{ env.BACKEND_IMAGE }}
+          image: ${{ steps.resolve-deployment-images.outputs.backend_image }}
 
       - name: Deploy backend service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
@@ -290,7 +365,7 @@ jobs:
         with:
           task-definition: worker-task-definition.json
           container-name: worker
-          image: ${{ env.BACKEND_IMAGE }}
+          image: ${{ steps.resolve-deployment-images.outputs.backend_image }}
 
       - name: Deploy worker service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
@@ -306,7 +381,7 @@ jobs:
         with:
           task-definition: frontend-task-definition.json
           container-name: frontend
-          image: ${{ env.FRONTEND_IMAGE }}
+          image: ${{ steps.resolve-deployment-images.outputs.frontend_image }}
 
       - name: Deploy frontend service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
