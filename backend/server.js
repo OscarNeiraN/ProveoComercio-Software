@@ -6,14 +6,23 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('./db');
 const { listProducts, getProductById, listCategories } = require('./products');
-const { createQueuedOrder, processQueuedOrder, getOrderForUser } = require('./orderProcessor');
+const {
+  createQueuedOrder,
+  processQueuedOrder,
+  listOrdersForUser,
+  getOrderForUser,
+} = require('./orderProcessor');
 const { isQueueEnabled, sendOrderMessage } = require('./sqs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'cambiar_este_secreto';
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const JWT_EXPIRES_IN = '7d';
-const hasDbConfig = !!(process.env.DB_HOST && process.env.DB_NAME && process.env.DB_USER);
+const hasDbConfig = !!(process.env.DB_HOST && process.env.DB_NAME && process.env.DB_USER && process.env.DB_PASSWORD);
+
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET es obligatorio en produccion');
+}
 
 function createToken(userId) {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -93,7 +102,6 @@ function withTimeout(promise, ms, fallback) {
 
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
 app.use(express.json());
-app.use(express.static(__dirname));
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
@@ -242,11 +250,18 @@ app.get('/api/categories', requireDatabase, async (_req, res) => {
 
 app.post('/api/orders', requireDatabase, authMiddleware, async (req, res) => {
   const { items, tipo_dte = 39, rut_receptor, address } = req.body;
+  const tipoDte = Number(tipo_dte || 39);
   if (!items?.length) {
     return res.status(400).json({ error: 'Faltan items en el pedido' });
   }
   if (!address || !address.street || !address.number || !address.commune || !address.region) {
     return res.status(400).json({ error: 'Falta la direccion de envio (calle, numero, comuna y region)' });
+  }
+  if (![39, 33].includes(tipoDte)) {
+    return res.status(400).json({ error: 'Tipo de documento invalido. Usa boleta 39 o factura 33' });
+  }
+  if (tipoDte === 33 && !String(rut_receptor || '').trim()) {
+    return res.status(400).json({ error: 'La factura requiere RUT receptor' });
   }
 
   try {
@@ -256,7 +271,7 @@ app.post('/api/orders', requireDatabase, authMiddleware, async (req, res) => {
     const queuedOrder = await createQueuedOrder({
       user,
       items,
-      tipo_dte,
+      tipo_dte: tipoDte,
       rut_receptor,
       address,
     });
@@ -273,6 +288,8 @@ app.post('/api/orders', requireDatabase, authMiddleware, async (req, res) => {
           total: queuedOrder.total,
           queued: true,
           queue_message_id: messageId,
+          document_type: tipoDte,
+          document_label: tipoDte === 33 ? 'Factura' : 'Boleta',
           source: 'rds',
         });
       } catch (queueErr) {
@@ -290,6 +307,16 @@ app.post('/api/orders', requireDatabase, authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('[/api/orders]', err.message);
     return res.status(502).json({ error: 'Error al crear orden', detail: err.message });
+  }
+});
+
+app.get('/api/orders', requireDatabase, authMiddleware, async (req, res) => {
+  try {
+    const orders = await listOrdersForUser(req.userId, req.query.limit);
+    res.json({ total: orders.length, orders });
+  } catch (err) {
+    console.error('[/api/orders]', err.message);
+    res.status(500).json({ error: 'Error al obtener pedidos' });
   }
 });
 
@@ -330,7 +357,7 @@ app.listen(PORT, async () => {
   console.log('========================================');
 
   if (!hasDbConfig) {
-    console.warn(' [!] MySQL/RDS no esta configurado. Define DB_HOST, DB_NAME y DB_USER.');
+    console.warn(' [!] MySQL/RDS no esta configurado. Define DB_HOST, DB_NAME, DB_USER y DB_PASSWORD.');
     console.log('========================================');
     return;
   }

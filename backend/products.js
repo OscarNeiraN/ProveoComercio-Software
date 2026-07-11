@@ -7,12 +7,25 @@ function assertDbConfigured() {
 }
 
 function mapProduct(row) {
+  const price = Number(row.price);
+  const oldPrice = row.old_price === null ? null : Number(row.old_price);
+  const discount = oldPrice && oldPrice > price
+    ? Math.round((1 - price / oldPrice) * 100)
+    : 0;
+
   return {
     id: Number(row.id),
     sku: row.sku,
+    brand: row.brand || '',
     name: row.name,
     category: row.category,
-    price: Number(row.price),
+    description: row.description || '',
+    image_url: row.image_url || '',
+    price,
+    old_price: oldPrice,
+    discount,
+    rating: Number(row.rating || 0),
+    reviews: Number(row.reviews || 0),
     stock: Number(row.stock),
   };
 }
@@ -35,7 +48,8 @@ async function listProducts({ category, search } = {}) {
   }
 
   const [rows] = await db.pool.execute(
-    `SELECT id, sku, name, category, price, stock
+    `SELECT id, sku, brand, name, category, description, image_url,
+            price, old_price, rating, reviews, stock
        FROM products
       WHERE ${where.join(' AND ')}
       ORDER BY category ASC, name ASC`,
@@ -49,7 +63,8 @@ async function getProductById(id) {
   assertDbConfigured();
 
   const [rows] = await db.pool.execute(
-    `SELECT id, sku, name, category, price, stock
+    `SELECT id, sku, brand, name, category, description, image_url,
+            price, old_price, rating, reviews, stock
        FROM products
       WHERE id = ?
         AND active = TRUE

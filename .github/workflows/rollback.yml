@@ -1,0 +1,139 @@
+name: Rollback Manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Servicio ECS a revertir"
+        required: true
+        type: choice
+        options:
+          - backend
+          - frontend
+          - worker
+      revision:
+        description: "Revision de la task definition a la que volver. Vacio = la revision anterior a la que esta corriendo ahora."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ECS_CLUSTER: proveocomercio-cluster
+
+jobs:
+  rollback:
+    name: Revertir servicio ECS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Resolver nombres segun el servicio elegido
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ inputs.service }}" in
+            backend)  family="proveocomercio-backend";  service_name="proveocomercio-backend-service" ;;
+            frontend) family="proveocomercio-frontend"; service_name="proveocomercio-frontend-service" ;;
+            worker)   family="proveocomercio-worker";   service_name="proveocomercio-worker-service" ;;
+            *) echo "Servicio desconocido: ${{ inputs.service }}" >&2; exit 1 ;;
+          esac
+          echo "family=$family" >> "$GITHUB_OUTPUT"
+          echo "service_name=$service_name" >> "$GITHUB_OUTPUT"
+
+      - name: Listar revisiones y elegir el objetivo
+        id: target
+        shell: bash
+        env:
+          FAMILY: ${{ steps.names.outputs.family }}
+          SERVICE_NAME: ${{ steps.names.outputs.service_name }}
+          REQUESTED_REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+
+          current_arn=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$SERVICE_NAME" \
+            --query 'services[0].taskDefinition' --output text)
+          current_rev=$(echo "$current_arn" | awk -F: '{print $NF}')
+
+          mapfile -t revisions < <(aws ecs list-task-definitions \
+            --family-prefix "$FAMILY" --status ACTIVE --sort DESC \
+            --query 'taskDefinitionArns[]' --output text | tr '\t' '\n' | awk -F: '{print $NF}')
+
+          if [ -n "$REQUESTED_REVISION" ]; then
+            target_rev="$REQUESTED_REVISION"
+          else
+            target_rev=""
+            for r in "${revisions[@]}"; do
+              if [ "$r" != "$current_rev" ]; then
+                target_rev="$r"
+                break
+              fi
+            done
+            if [ -z "$target_rev" ]; then
+              echo "No hay ninguna revision anterior a la $current_rev para $FAMILY." >&2
+              exit 1
+            fi
+          fi
+
+          {
+            echo "## Rollback de \`$SERVICE_NAME\`"
+            echo ""
+            echo "Revision actualmente desplegada: **$current_rev**"
+            echo "Revision objetivo de este rollback: **$target_rev**"
+            echo ""
+            echo "| Revision | Imagen | Registrada | Estado |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          count=0
+          for r in "${revisions[@]}"; do
+            [ "$count" -ge 10 ] && break
+            count=$((count + 1))
+
+            image=$(aws ecs describe-task-definition \
+              --task-definition "$FAMILY:$r" \
+              --query 'taskDefinition.containerDefinitions[0].image' --output text)
+            registered=$(aws ecs describe-task-definition \
+              --task-definition "$FAMILY:$r" \
+              --query 'taskDefinition.registeredAt' --output text)
+
+            marker=""
+            [ "$r" = "$current_rev" ] && marker=" (actual)"
+            [ "$r" = "$target_rev" ] && marker="$marker (objetivo)"
+
+            echo "| $r$marker | \`$image\` | $registered | ACTIVE |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "family=$FAMILY" >> "$GITHUB_OUTPUT"
+          echo "service_name=$SERVICE_NAME" >> "$GITHUB_OUTPUT"
+          echo "target_rev=$target_rev" >> "$GITHUB_OUTPUT"
+
+      - name: Aplicar rollback
+        shell: bash
+        env:
+          FAMILY: ${{ steps.target.outputs.family }}
+          SERVICE_NAME: ${{ steps.target.outputs.service_name }}
+          TARGET_REV: ${{ steps.target.outputs.target_rev }}
+        run: |
+          set -euo pipefail
+          echo "Revirtiendo $SERVICE_NAME a $FAMILY:$TARGET_REV ..."
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$SERVICE_NAME" \
+            --task-definition "$FAMILY:$TARGET_REV" \
+            --force-new-deployment \
+            >/dev/null
+
+          echo "Esperando a que el servicio quede estable (el circuit breaker puede revertir esto tambien si la revision elegida esta rota)..."
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$SERVICE_NAME"
+          echo "Rollback completado: $SERVICE_NAME corriendo $FAMILY:$TARGET_REV"

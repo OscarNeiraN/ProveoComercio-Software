@@ -128,8 +128,29 @@ jobs:
               --org="${SNYK_ORG}" \
               --severity-threshold=high \
               --json-file-output=../security-reports/sast/snyk-open-source.json \
-              --sarif-file-output=../security-reports/sast/snyk-open-source.sarif
-            echo "$?" > ../security-reports/sast/snyk-open-source.exitcode
+              --sarif-file-output=../security-reports/sast/snyk-open-source.sarif \
+              2>&1 | tee ../security-reports/sast/snyk-open-source-output.txt
+            echo "${PIPESTATUS[0]}" > ../security-reports/sast/snyk-open-source.exitcode
+          fi
+          set -e
+
+      - name: Publish Snyk Open Source snapshot
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_ORG: ${{ secrets.SNYK_ORG }}
+        shell: bash
+        run: |
+          set +e
+          if [ -z "${SNYK_TOKEN:-}" ] || [ -z "${SNYK_ORG:-}" ]; then
+            echo "SNYK_TOKEN or SNYK_ORG is missing; Snyk monitor was not executed." > security-reports/sast/snyk-open-source-monitor.txt
+            echo "1" > security-reports/sast/snyk-open-source-monitor.exitcode
+          else
+            cd backend
+            snyk monitor \
+              --org="${SNYK_ORG}" \
+              --project-name="proveocomercio-backend" \
+              2>&1 | tee ../security-reports/sast/snyk-open-source-monitor.txt
+            echo "${PIPESTATUS[0]}" > ../security-reports/sast/snyk-open-source-monitor.exitcode
           fi
           set -e
 
@@ -146,11 +167,13 @@ jobs:
           else
             snyk code test \
               --org="${SNYK_ORG}" \
+              --report \
               --severity-threshold=high \
               --json-file-output=security-reports/sast/snyk-code.json \
               --sarif-file-output=security-reports/sast/snyk-code.sarif \
-              .
-            echo "$?" > security-reports/sast/snyk-code.exitcode
+              . \
+              2>&1 | tee security-reports/sast/snyk-code-output.txt
+            echo "${PIPESTATUS[0]}" > security-reports/sast/snyk-code.exitcode
           fi
           set -e
 
@@ -183,6 +206,120 @@ jobs:
             /workspace
           echo "$?" > security-reports/sast/trivy-fs.exitcode
           set -e
+
+      - name: Summarize SAST reports
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          report_dir = Path("security-reports/sast")
+          report_dir.mkdir(parents=True, exist_ok=True)
+
+          def read_json(path):
+              try:
+                  if path.exists() and path.stat().st_size > 0:
+                      return json.loads(path.read_text(encoding="utf-8"))
+              except Exception:
+                  return None
+              return None
+
+          def read_exitcode(name):
+              path = report_dir / name
+              if not path.exists():
+                  return "missing"
+              return path.read_text(encoding="utf-8").strip() or "missing"
+
+          def gate(code):
+              return "PASS" if code == "0" else "FAIL"
+
+          def severity_counts_from_snyk(data):
+              counts = {"critical": 0, "high": 0, "medium": 0, "moderate": 0, "low": 0, "info": 0}
+              items = []
+              if isinstance(data, dict):
+                  items = data.get("vulnerabilities") or []
+              elif isinstance(data, list):
+                  for entry in data:
+                      if isinstance(entry, dict):
+                          items.extend(entry.get("vulnerabilities") or [])
+              for vuln in items:
+                  sev = str(vuln.get("severity", "")).lower()
+                  if sev in counts:
+                      counts[sev] += 1
+              return counts
+
+          def counts_text(counts):
+              order = ["critical", "high", "medium", "moderate", "low", "info"]
+              visible = [f"{key}:{counts[key]}" for key in order if counts.get(key)]
+              return ", ".join(visible) if visible else "0 findings"
+
+          def sarif_count(path):
+              data = read_json(path)
+              total = 0
+              if isinstance(data, dict):
+                  for run in data.get("runs", []):
+                      total += len(run.get("results", []) or [])
+              return total
+
+          def npm_summary():
+              data = read_json(report_dir / "npm-audit.json")
+              if not isinstance(data, dict):
+                  return "report missing"
+              vulns = data.get("metadata", {}).get("vulnerabilities", {})
+              if not vulns:
+                  return "0 findings"
+              order = ["critical", "high", "moderate", "low", "info", "total"]
+              return ", ".join(f"{key}:{vulns.get(key, 0)}" for key in order if vulns.get(key, 0))
+
+          def collect_snyk_links():
+              urls = []
+              for path in report_dir.glob("snyk-*"):
+                  if path.is_file() and path.suffix.lower() in {".txt", ".json"}:
+                      text = path.read_text(encoding="utf-8", errors="ignore")
+                      for url in re.findall(r"https?://[^\s\"')>]+", text):
+                          clean = url.rstrip(".,]")
+                          if ("app.snyk.io" in clean or re.search(r"https?://(?:app\.)?snyk\.io/org/", clean)) and clean not in urls:
+                              urls.append(clean)
+              return urls
+
+          snyk_oss = read_json(report_dir / "snyk-open-source.json")
+          rows = [
+              ("npm audit", gate(read_exitcode("npm-audit.exitcode")), npm_summary(), "npm-audit.json"),
+              ("Snyk Open Source", gate(read_exitcode("snyk-open-source.exitcode")), counts_text(severity_counts_from_snyk(snyk_oss)), "snyk-open-source.json"),
+              ("Snyk monitor link", gate(read_exitcode("snyk-open-source-monitor.exitcode")), "snapshot published to Snyk" if read_exitcode("snyk-open-source-monitor.exitcode") == "0" else "snapshot not published", "snyk-open-source-monitor.txt"),
+              ("Snyk Code", gate(read_exitcode("snyk-code.exitcode")), f"{sarif_count(report_dir / 'snyk-code.sarif')} SARIF findings", "snyk-code.sarif"),
+              ("Semgrep", gate(read_exitcode("semgrep.exitcode")), f"{sarif_count(report_dir / 'semgrep.sarif')} SARIF findings", "semgrep.sarif"),
+              ("Trivy filesystem", gate(read_exitcode("trivy-fs.exitcode")), f"{sarif_count(report_dir / 'trivy-fs.sarif')} SARIF findings", "trivy-fs.sarif"),
+          ]
+
+          links = collect_snyk_links()
+          (report_dir / "snyk-links.txt").write_text("\n".join(links) + ("\n" if links else "No Snyk URL was produced.\n"), encoding="utf-8")
+
+          lines = [
+              "# SAST Security Summary",
+              "",
+              "Read this file first. Detailed JSON/SARIF reports remain in this artifact for audit evidence.",
+              "",
+              "| Scanner | Gate | Human summary | Detailed file |",
+              "|---|---:|---|---|",
+          ]
+          for scanner, status, summary, file_name in rows:
+              lines.append(f"| {scanner} | {status} | {summary} | `{file_name}` |")
+
+          lines.extend(["", "## Snyk Links", ""])
+          if links:
+              lines.extend(f"- {url}" for url in links)
+          else:
+              lines.append("- No Snyk URL was produced. Check `snyk-open-source-monitor.txt` and `snyk-code-output.txt`.")
+
+          summary = "\n".join(lines) + "\n"
+          (report_dir / "sast-summary.md").write_text(summary, encoding="utf-8")
+          print(summary)
+          PY
+          cat security-reports/sast/sast-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SAST artifacts
         if: always()
@@ -231,12 +368,13 @@ jobs:
         run: |
           set -euo pipefail
           docker compose -f docker-compose.ci.yml up -d --build
-          for i in {1..60}; do
+          for i in {1..90}; do
             if curl -fsS http://localhost:8080/ >/dev/null; then
               exit 0
             fi
             sleep 2
           done
+          docker compose -f docker-compose.ci.yml logs --no-color
           docker compose -f docker-compose.ci.yml ps
           exit 1
 

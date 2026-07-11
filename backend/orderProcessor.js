@@ -3,6 +3,11 @@ const db = require('./db');
 const { generarXMLDTE, siguienteFolio } = require('./boleta');
 const { enviarConfirmacionCompra } = require('./mailer');
 
+const PROCESSING_STALE_MINUTES = Math.max(
+  1,
+  Number(process.env.ORDER_PROCESSING_STALE_MINUTES || 15)
+);
+
 const EMISOR = {
   rut: process.env.RUT_EMISOR || '00000000-0',
   razonSocial: process.env.RAZON_SOCIAL || 'ProveoComercio SpA',
@@ -46,6 +51,24 @@ function validateAddress(address) {
   }
 }
 
+function normalizeDocument({ tipo_dte, rut_receptor }) {
+  const tipoDte = Number(tipo_dte || 39);
+  const rutReceptor = String(rut_receptor || '').trim();
+
+  if (![39, 33].includes(tipoDte)) {
+    throw new Error('Tipo de documento no soportado. Usa boleta 39 o factura 33');
+  }
+
+  if (tipoDte === 33 && !rutReceptor) {
+    throw new Error('La factura requiere RUT receptor');
+  }
+
+  return {
+    tipoDte,
+    rutReceptor: rutReceptor || '66666666-6',
+  };
+}
+
 function makeOrderRef() {
   const stamp = Date.now().toString(36).toUpperCase();
   const suffix = crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -71,6 +94,7 @@ async function createQueuedOrder({ user, items, tipo_dte = 39, rut_receptor, add
   validateAddress(address);
 
   const requestedItems = normalizeItems(items);
+  const document = normalizeDocument({ tipo_dte, rut_receptor });
   const orderId = crypto.randomUUID();
   const addressId = crypto.randomUUID();
   const orderRef = makeOrderRef();
@@ -146,9 +170,9 @@ async function createQueuedOrder({ user, items, tipo_dte = 39, rut_receptor, add
         0,
         total,
         orderRef,
-        'online',
-        tipo_dte,
-        rut_receptor || '66666666-6',
+        'sin_pago',
+        document.tipoDte,
+        document.rutReceptor,
         'queued',
         'adjusted',
         'pending',
@@ -195,25 +219,30 @@ async function claimOrder(orderId) {
     `UPDATE orders
         SET processing_status = 'processing',
             processing_attempts = processing_attempts + 1,
-            processing_error = NULL
+            processing_error = NULL,
+            processing_started_at = NOW()
       WHERE id = ?
         AND (
           processing_status IN ('queued', 'failed')
-          OR (
-            processing_status = 'completed'
-            AND stock_adjusted_at IS NULL
-            AND stock_status IN ('pending', 'failed')
+         OR (
+           processing_status = 'completed'
+           AND stock_adjusted_at IS NULL
+           AND stock_status IN ('pending', 'failed')
           )
           OR (
             processing_status = 'completed'
-            AND mail_status IN ('pending', 'failed', 'simulated')
+            AND mail_status IN ('pending', 'failed')
           )
-          OR (
-            processing_status = 'processing'
-            AND processing_attempts < 10
-          )
+         OR (
+           processing_status = 'processing'
+           AND (
+             processing_started_at IS NULL
+             OR TIMESTAMPDIFF(MINUTE, processing_started_at, NOW()) >= ?
+           )
+           AND processing_attempts < 10
+         )
         )`,
-    [orderId]
+    [orderId, PROCESSING_STALE_MINUTES]
   );
 
   return result.affectedRows === 1;
@@ -223,7 +252,8 @@ async function markOrderFailed(orderId, err) {
   await db.pool.execute(
     `UPDATE orders
         SET processing_status = 'failed',
-            processing_error = ?
+            processing_error = ?,
+            processing_started_at = NULL
       WHERE id = ?`,
     [String(err.message || err).slice(0, 6000), orderId]
   );
@@ -234,6 +264,7 @@ async function markOrderCompleted(orderId) {
     `UPDATE orders
         SET processing_status = 'completed',
             processing_error = NULL,
+            processing_started_at = NULL,
             processed_at = NOW()
       WHERE id = ?`,
     [orderId]
@@ -525,17 +556,127 @@ async function findRecoverableOrderIds(limit = 10) {
          )
          OR (
            processing_status = 'completed'
-           AND mail_status IN ('pending', 'failed', 'simulated')
+           AND mail_status IN ('pending', 'failed')
          )
-         OR (
-           processing_status = 'processing'
-           AND processing_attempts < 10
-         )
+          OR (
+            processing_status = 'processing'
+            AND (
+              processing_started_at IS NULL
+              OR TIMESTAMPDIFF(MINUTE, processing_started_at, NOW()) >= ?
+            )
+            AND processing_attempts < 10
+          )
       ORDER BY queued_at ASC, id ASC
-      LIMIT ${safeLimit}`
+      LIMIT ${safeLimit}`,
+    [PROCESSING_STALE_MINUTES]
   );
 
   return rows.map(row => row.id);
+}
+
+function mapOrderRow(row, items = []) {
+  const tipo = Number(row.boleta_tipo || 39);
+  return {
+    id: row.id,
+    order_ref: row.order_ref,
+    subtotal: Number(row.subtotal),
+    shipping_cost: Number(row.shipping_cost),
+    total: Number(row.total),
+    payment_method: row.payment_method,
+    document_type: tipo,
+    document_label: tipo === 33 ? 'Factura' : 'Boleta',
+    rut_receptor: row.rut_receptor,
+    boleta_tipo: row.boleta_tipo,
+    boleta_folio: row.boleta_folio,
+    boleta_fecha: row.boleta_fecha,
+    processing_status: row.processing_status,
+    processing_error: row.processing_error,
+    processing_attempts: Number(row.processing_attempts || 0),
+    processing_started_at: row.processing_started_at,
+    queued_at: row.queued_at,
+    processed_at: row.processed_at,
+    stock_status: row.stock_status,
+    stock_error: row.stock_error,
+    stock_adjusted_at: row.stock_adjusted_at,
+    mail_status: row.mail_status,
+    mail_message_id: row.mail_message_id,
+    mail_error: row.mail_error,
+    mail_sent_at: row.mail_sent_at,
+    created_at: row.created_at,
+    items,
+  };
+}
+
+async function listOrdersForUser(userId, limit = 20) {
+  assertDbConfigured();
+
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+  const [orders] = await db.pool.execute(
+    `SELECT
+       id,
+       subtotal,
+       shipping_cost,
+       total,
+       order_ref,
+       payment_method,
+       boleta_tipo,
+       boleta_folio,
+       boleta_fecha,
+       rut_receptor,
+       processing_status,
+       processing_error,
+       processing_attempts,
+       queued_at,
+       processed_at,
+       stock_status,
+       stock_error,
+       stock_adjusted_at,
+       mail_status,
+       mail_message_id,
+       mail_error,
+       mail_sent_at,
+       created_at
+     FROM orders
+     WHERE user_id = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT ${safeLimit}`,
+    [userId]
+  );
+
+  if (!orders.length) return [];
+
+  const orderIds = orders.map(order => order.id);
+  const placeholders = orderIds.map(() => '?').join(',');
+  const [items] = await db.pool.execute(
+    `SELECT
+       order_id,
+       product_id,
+       sku,
+       product_name AS name,
+       unit_price,
+       quantity,
+       subtotal
+     FROM order_items
+     WHERE order_id IN (${placeholders})
+     ORDER BY created_at ASC, id ASC`,
+    orderIds
+  );
+
+  const itemsByOrder = new Map();
+  for (const item of items) {
+    const list = itemsByOrder.get(item.order_id) || [];
+    list.push({
+      product_id: item.product_id === null ? null : Number(item.product_id),
+      sku: item.sku,
+      name: item.name,
+      unit_price: Number(item.unit_price),
+      quantity: Number(item.quantity),
+      subtotal: Number(item.subtotal),
+    });
+    itemsByOrder.set(item.order_id, list);
+  }
+
+  return orders.map(order => mapOrderRow(order, itemsByOrder.get(order.id) || []));
 }
 
 async function getOrderById(orderId) {
@@ -562,12 +703,15 @@ async function getOrderForUser(orderId, userId) {
        shipping_cost,
        total,
        order_ref,
+       payment_method,
        boleta_tipo,
        boleta_folio,
        boleta_fecha,
+       rut_receptor,
        processing_status,
        processing_error,
        processing_attempts,
+       processing_started_at,
        queued_at,
        processed_at,
        stock_status,
@@ -585,12 +729,13 @@ async function getOrderForUser(orderId, userId) {
     [orderId, userId]
   );
 
-  return rows[0] || null;
+  return rows[0] ? mapOrderRow(rows[0]) : null;
 }
 
 module.exports = {
   createQueuedOrder,
   processQueuedOrder,
   findRecoverableOrderIds,
+  listOrdersForUser,
   getOrderForUser,
 };

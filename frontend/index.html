@@ -4,32 +4,29 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>ProveoComercio</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
-
-  <header>
+  <header class="app-header">
     <div class="header-inner">
-      <div class="logo">
-        <div class="logo-mark">P</div>
-        <span>ProveoComercio</span>
-      </div>
-      <div class="header-right">
-        <div class="api-status">
-          <span class="dot" id="dot"></span>
-          <span id="statusText">Conectando...</span>
-        </div>
-        <div class="user-box">
-          <button class="btn-secondary" id="authBtn">Ingresar</button>
-          <button class="btn-secondary" id="logoutBtn" hidden>Cerrar sesión</button>
-        </div>
-        <button class="cart-btn" id="cartBtn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-            <line x1="3" y1="6" x2="21" y2="6"/>
-            <path d="M16 10a4 4 0 01-8 0"/>
+      <button class="brand" id="homeBtn" type="button">
+        <span class="brand-mark">P</span>
+        <span>
+          <strong>ProveoComercio</strong>
+          <small>Tienda online</small>
+        </span>
+      </button>
+
+      <div class="header-actions">
+        <button class="header-btn" id="ordersBtn" type="button" hidden>Mis pedidos</button>
+        <button class="header-btn" id="authBtn" type="button">Ingresar</button>
+        <button class="header-btn subtle" id="logoutBtn" type="button" hidden>Salir</button>
+        <button class="cart-btn" id="cartBtn" type="button" aria-label="Abrir carrito">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6h15l-2 8H8L6 6Z"></path>
+            <path d="M6 6 5 2H2"></path>
+            <circle cx="9" cy="20" r="1.5"></circle>
+            <circle cx="18" cy="20" r="1.5"></circle>
           </svg>
           <span id="cartCount">0</span>
         </button>
@@ -37,161 +34,314 @@
     </div>
   </header>
 
-  <section class="hero">
-    <div class="hero-inner">
-      <div class="hero-tag">Catálogo oficial</div>
-      <h1>Tecnología y<br/><em>equipamiento</em></h1>
-      <p>Stock actualizado desde AWS RDS en tiempo real</p>
-    </div>
-    <div class="hero-deco" aria-hidden="true"></div>
-  </section>
+  <main class="shop-shell">
+    <section class="shop-top">
+      <div class="hero-copy">
+        <p class="eyebrow">Cyber maqueta infraestructura</p>
+        <h1>Todo para renovar tu setup</h1>
+        <p class="shop-copy">Compra sin pago online para demo: confirma tu pedido, reserva stock, genera boleta o factura y recibe el comprobante por correo.</p>
+        <div class="hero-actions">
+          <button class="primary-btn inline" type="button" id="heroCatalogBtn">Ver catalogo</button>
+          <button class="ghost-btn" type="button" id="heroOrdersBtn">Revisar pedidos</button>
+        </div>
+      </div>
+      <div class="hero-deal">
+        <span>Oferta destacada</span>
+        <strong>Hasta 28% dcto.</strong>
+        <small>Notebooks, audio y accesorios seleccionados</small>
+      </div>
+    </section>
 
-  <div class="controls-bar">
-    <div class="controls-inner">
+    <section class="retail-strip" aria-label="Beneficios">
+      <div>
+        <strong>Despacho preparado</strong>
+        <span>Direccion guardada</span>
+      </div>
+      <div>
+        <strong>Documento tributario</strong>
+        <span>Boleta o factura XML</span>
+      </div>
+      <div>
+        <strong>Stock real</strong>
+        <span>Reserva inmediata</span>
+      </div>
+      <div>
+        <strong>Correo de compra</strong>
+        <span>Confirmacion por email</span>
+      </div>
+    </section>
+
+    <section class="department-row" aria-label="Departamentos destacados">
+      <button class="department-card" type="button" data-jump-cat="Computacion">
+        <span>Computacion</span>
+        <strong>Notebooks pro y gamer</strong>
+      </button>
+      <button class="department-card" type="button" data-jump-cat="Audio">
+        <span>Audio</span>
+        <strong>Audifonos y parlantes</strong>
+      </button>
+      <button class="department-card" type="button" data-jump-cat="Smartphones">
+        <span>Smartphones</span>
+        <strong>Equipos 5G</strong>
+      </button>
+      <button class="department-card" type="button" data-jump-cat="Accesorios">
+        <span>Accesorios</span>
+        <strong>Cargadores, hubs y bolsos</strong>
+      </button>
+    </section>
+
+    <section class="catalog-toolbar" aria-label="Filtros de catalogo">
       <div class="search-wrap">
-        <svg class="si" viewBox="0 0 20 20" fill="none">
-          <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.5"/>
-          <path d="M15 15l-3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="8.5" cy="8.5" r="5.5"></circle>
+          <path d="M15 15l-3.1-3.1"></path>
         </svg>
-        <input id="searchInput" type="text" placeholder="Buscar por nombre o SKU…" autocomplete="off"/>
-        <button class="clear-btn" id="clearBtn">✕</button>
+        <input id="searchInput" type="search" placeholder="Buscar producto o SKU" autocomplete="off"/>
+        <button id="clearBtn" class="clear-btn" type="button" aria-label="Limpiar busqueda">x</button>
       </div>
       <div class="filters" id="filters">
-        <button class="pill active" data-cat="">Todos</button>
+        <button class="filter-chip active" data-cat="" type="button">Todos</button>
+      </div>
+    </section>
+
+    <div class="catalog-head">
+      <div>
+        <h2>Productos recomendados</h2>
+        <p>Ofertas y novedades seleccionadas</p>
+      </div>
+      <div class="catalog-metrics">
+        <span><strong id="resultCount">0</strong> productos</span>
+        <span>Actualizado <strong id="syncTime">Ahora</strong></span>
       </div>
     </div>
-  </div>
 
-  <main>
-    <div class="meta-row">
-      <span id="resultCount">—</span>
-      <span id="syncTime" class="muted">—</span>
-    </div>
-    <div id="errorBanner" class="error-banner" hidden>
+    <div id="errorBanner" class="notice danger" hidden>
       <span id="errorMsg"></span>
     </div>
-    <div class="grid" id="grid">
-      <div class="sk"></div><div class="sk"></div><div class="sk"></div>
-      <div class="sk"></div><div class="sk"></div><div class="sk"></div>
-    </div>
+
+    <section class="product-grid" id="grid" aria-live="polite">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </section>
   </main>
 
-  <!-- Panel carrito -->
-  <aside class="cart-panel" id="cartPanel">
-    <div class="cart-header">
-      <h2>Carrito</h2>
-      <button class="icon-btn" id="cartClose">✕</button>
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <section class="footer-brand">
+        <div class="footer-logo">
+          <span class="brand-mark">P</span>
+          <div>
+            <strong>ProveoComercio</strong>
+            <span>Tienda online</span>
+          </div>
+        </div>
+        <p>Somos una tienda enfocada en tecnologia, accesorios y productos para renovar tu setup con una experiencia simple, rapida y confiable.</p>
+      </section>
+
+      <section class="footer-column">
+        <h3>Quienes somos</h3>
+        <a href="#homeBtn">Nuestra tienda</a>
+        <a href="#grid">Productos</a>
+        <a href="#ordersBtn">Mis pedidos</a>
+      </section>
+
+      <section class="footer-column">
+        <h3>Ayuda</h3>
+        <span>Despachos a todo Chile</span>
+        <span>Boleta o factura disponible</span>
+        <span>Atencion Lun a Vie, 9:00 a 18:00</span>
+      </section>
+
+      <section class="footer-column">
+        <h3>Contacto</h3>
+        <a href="mailto:contacto@proveocomercio.cl">contacto@proveocomercio.cl</a>
+        <a href="tel:+56224001000">+56 2 2400 1000</a>
+        <span>Av. Providencia 1234, Santiago</span>
+      </section>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2026 ProveoComercio SpA. Todos los derechos reservados.</span>
+      <span>Compra sin pago online para maqueta academica.</span>
+    </div>
+  </footer>
+
+  <aside class="cart-panel" id="cartPanel" aria-label="Carrito de compra">
+    <div class="panel-header">
+      <div>
+        <h2>Carrito</h2>
+        <p id="cartSubtitle">Sin productos</p>
+      </div>
+      <button class="icon-btn" id="cartClose" type="button" aria-label="Cerrar carrito">x</button>
     </div>
     <div class="cart-items" id="cartItems">
-      <div class="cart-empty">Tu carrito está vacío</div>
+      <div class="empty-state">Tu carrito esta vacio</div>
     </div>
-    <div class="cart-footer" id="cartFooter" hidden>
-      <div class="cart-total-row">
+    <div class="cart-summary" id="cartFooter" hidden>
+      <div class="summary-row">
+        <span>Subtotal</span>
+        <strong id="cartSubtotal">$0</strong>
+      </div>
+      <div class="summary-row">
+        <span>Despacho</span>
+        <strong>$0</strong>
+      </div>
+      <div class="summary-row total">
         <span>Total</span>
         <strong id="cartTotal">$0</strong>
       </div>
-      <button class="btn-checkout" id="btnCheckout">Confirmar pedido</button>
+      <button class="primary-btn" id="btnCheckout" type="button">Confirmar pedido</button>
     </div>
   </aside>
   <div class="overlay" id="overlay"></div>
 
-  <!-- Modal datos cliente -->
-  <div class="modal-wrap" id="modalWrap" hidden>
-    <div class="modal">
-      <h3>Datos del pedido</h3>
-      <div class="form-group">
-        <label>Nombre completo</label>
-        <input id="fName" type="text" placeholder="Juan Pérez"/>
-      </div>
-      <div class="form-group">
-        <label>Email</label>
-        <input id="fEmail" type="email" placeholder="juan@email.com"/>
+  <div class="modal-wrap" id="checkoutWrap" hidden>
+    <div class="modal wide">
+      <div class="modal-title">
+        <div>
+          <p class="eyebrow">Checkout sin pago</p>
+          <h3>Datos de compra</h3>
+        </div>
+        <button class="icon-btn" id="btnModalClose" type="button" aria-label="Cerrar">x</button>
       </div>
 
-      <h4 style="font-family:var(--fd);font-size:1rem;font-weight:400;margin:1rem 0 .65rem">Dirección de envío</h4>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Calle</label>
-          <input id="fStreet" type="text" placeholder="Av. Providencia"/>
-        </div>
-        <div class="form-group">
-          <label>Número</label>
-          <input id="fNumber" type="text" placeholder="1234"/>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Depto / Casa (opcional)</label>
-        <input id="fApt" type="text" placeholder="Depto 502"/>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Comuna</label>
-          <input id="fCommune" type="text" placeholder="Providencia"/>
-        </div>
-        <div class="form-group">
-          <label>Región</label>
-          <input id="fRegion" type="text" placeholder="Metropolitana"/>
-        </div>
-      </div>
+      <div class="checkout-state" id="checkoutState" hidden></div>
 
-      <div class="modal-actions">
-        <button class="btn-secondary" id="btnModalClose">Cancelar</button>
-        <button class="btn-primary" id="btnConfirm">Confirmar pedido</button>
+      <div class="checkout-grid" id="checkoutGrid">
+        <section class="form-section">
+          <h4>Documento</h4>
+          <div class="form-row">
+            <label class="field">
+              <span>Tipo</span>
+              <select id="docType">
+                <option value="39">Boleta</option>
+                <option value="33">Factura</option>
+              </select>
+            </label>
+            <label class="field" id="rutField">
+              <span>RUT receptor</span>
+              <input id="rutReceptor" type="text" placeholder="11111111-1"/>
+            </label>
+          </div>
+
+          <h4>Comprador</h4>
+          <div class="form-row">
+            <label class="field">
+              <span>Nombre</span>
+              <input id="fName" type="text" readonly/>
+            </label>
+            <label class="field">
+              <span>Email</span>
+              <input id="fEmail" type="email" readonly/>
+            </label>
+          </div>
+
+          <h4>Direccion de envio</h4>
+          <div class="form-row">
+            <label class="field grow">
+              <span>Calle</span>
+              <input id="fStreet" type="text" placeholder="Av. Providencia"/>
+            </label>
+            <label class="field short">
+              <span>Numero</span>
+              <input id="fNumber" type="text" placeholder="1234"/>
+            </label>
+          </div>
+          <div class="form-row">
+            <label class="field">
+              <span>Depto o casa</span>
+              <input id="fApt" type="text" placeholder="Opcional"/>
+            </label>
+            <label class="field">
+              <span>Comuna</span>
+              <input id="fCommune" type="text" placeholder="Providencia"/>
+            </label>
+            <label class="field">
+              <span>Region</span>
+              <input id="fRegion" type="text" placeholder="Metropolitana"/>
+            </label>
+          </div>
+        </section>
+
+        <section class="checkout-resume">
+          <h4>Resumen</h4>
+          <div id="checkoutItems" class="checkout-items"></div>
+          <div class="summary-row total">
+            <span>Total</span>
+            <strong id="checkoutTotal">$0</strong>
+          </div>
+          <p class="muted">No se procesa pago en linea. El pedido queda registrado y se procesa boleta/factura por correo.</p>
+          <button class="primary-btn" id="btnConfirm" type="button">Crear pedido</button>
+          <div id="orderResult" class="order-result" hidden></div>
+        </section>
       </div>
-      <div id="orderResult" class="order-result" hidden></div>
     </div>
   </div>
 
-  <!-- Modal auth -->
   <div class="modal-wrap" id="authWrap" hidden>
     <div class="modal auth-modal">
-      <h3 id="authTitle">Iniciar sesión</h3>
+      <div class="modal-title">
+        <div>
+          <p class="eyebrow" id="authEyebrow">Cuenta</p>
+          <h3 id="authTitle">Iniciar sesion</h3>
+        </div>
+        <button class="icon-btn" id="btnAuthClose" type="button" aria-label="Cerrar">x</button>
+      </div>
       <div class="tab-row">
-        <button class="tab active" id="tabLogin">Ingresar</button>
-        <button class="tab" id="tabRegister">Registrarse</button>
+        <button class="tab active" id="tabLogin" type="button">Ingresar</button>
+        <button class="tab" id="tabRegister" type="button">Registrarse</button>
       </div>
+
       <div id="loginPanel">
-        <div class="form-group">
-          <label>Email</label>
+        <label class="field">
+          <span>Email</span>
           <input id="loginEmail" type="email" placeholder="juan@email.com"/>
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input id="loginPassword" type="password" placeholder="••••••••"/>
-        </div>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="loginPassword" type="password" placeholder="Password"/>
+        </label>
       </div>
+
       <div id="registerPanel" hidden>
-        <div class="form-group">
-          <label>Nombre</label>
-          <input id="regFirstName" type="text" placeholder="Juan"/>
+        <div class="form-row">
+          <label class="field">
+            <span>Nombre</span>
+            <input id="regFirstName" type="text" placeholder="Juan"/>
+          </label>
+          <label class="field">
+            <span>Apellido</span>
+            <input id="regLastName" type="text" placeholder="Perez"/>
+          </label>
         </div>
-        <div class="form-group">
-          <label>Apellido</label>
-          <input id="regLastName" type="text" placeholder="Pérez"/>
-        </div>
-        <div class="form-group">
-          <label>Email</label>
+        <label class="field">
+          <span>Email</span>
           <input id="regEmail" type="email" placeholder="juan@email.com"/>
-        </div>
-        <div class="form-group">
-          <label>Contraseña</label>
-          <input id="regPassword" type="password" placeholder="••••••••"/>
-        </div>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="regPassword" type="password" placeholder="Minimo 12 caracteres"/>
+        </label>
       </div>
-      <div class="modal-actions">
-        <button class="btn-secondary" id="btnAuthClose">Cerrar</button>
-        <button class="btn-primary" id="btnAuthSubmit">Continuar</button>
-      </div>
+
+      <button class="primary-btn full" id="btnAuthSubmit" type="button">Continuar</button>
       <div id="authResult" class="order-result" hidden></div>
     </div>
   </div>
 
-  <footer>
-    <div class="footer-inner">
-      <span>ProveoComercio &copy; 2025</span>
-      <span class="muted">Node.js · Express · RDS · Docker</span>
+  <div class="modal-wrap" id="ordersWrap" hidden>
+    <div class="modal wide">
+      <div class="modal-title">
+        <div>
+          <p class="eyebrow">Cuenta</p>
+          <h3>Mis pedidos</h3>
+        </div>
+        <button class="icon-btn" id="btnOrdersClose" type="button" aria-label="Cerrar">x</button>
+      </div>
+      <div id="ordersList" class="orders-list"></div>
     </div>
-  </footer>
+  </div>
 
   <script src="app.js"></script>
 </body>
